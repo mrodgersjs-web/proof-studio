@@ -1,0 +1,33 @@
+# Optional local hooks. Install with:
+#   pip install pre-commit && pre-commit install
+#
+# Deliberately conservative: these hooks must agree with CI, never exceed it.
+# A hook that reformats files CI does not check would produce diffs that are
+# pure noise to a reviewer.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # Matches the `ruff>=0.16,<0.17` pin in pyproject.toml's dev extra, so the
+    # hook and CI cannot disagree about what passes.
+    rev: v0.16.1
+    hooks:
+      # No `--fix`, and no `ruff-format`. This codebase is not ruff-formatted
+      # and does not yet pass ruff's full default rule set (see the comment on
+      # [tool.ruff.lint] in pyproject.toml). Enabling either here would rewrite
+      # most of the repo on someone's first commit. The hook runs exactly the
+      # enforced rule set from pyproject.toml -- the same thing CI blocks on.
+      - id: ruff
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      # This repo generates a real HMAC signing key at .rigforge/signing.key.
+      # It is gitignored, but a leaked signing key voids every proof this tool
+      # produces, so it is worth a second, independent check.
+      - id: detect-private-key
+      # Guards against build artifacts (a stray .mp4 / model / dataset) being
+      # committed alongside source.
+      - id: check-added-large-files
+        args: [--maxkb=512]

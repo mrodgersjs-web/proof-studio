@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Proof packets (generated at runtime)
+proofs/
+
+# RIGForge signing key (auto-generated, never commit)
+.rigforge/
+
+# Ruff
+.ruff_cache/
+
+# JS tooling (the cockpit SPA is vanilla, but these show up if you reach for a
+# bundler locally)
+node_modules/
+.next/
+.turbo/
+.cache/
+
+# runtime artifacts (not source)
+ledger/
+*.output
+*.log
+
+# internal launch playbook (not public)
+docs/LAUNCH.md
+
+# internal 1000x roadmap (not public)
+docs/ROADMAP-1000X.md

@@ -1,0 +1,22 @@
+version: 2
+updates:
+  # Runtime + dev dependencies declared in pyproject.toml.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(deps)"
+
+  # CI actions are pinned to full commit SHAs in .github/workflows/ci.yml.
+  # SHA pins do not drift, which is the point -- but they also do not pick up
+  # security fixes on their own. This is what keeps them current, with a diff
+  # to review rather than an implicit upgrade.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore(ci)"
