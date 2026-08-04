@@ -115,3 +115,18 @@ Demo keys and fixtures are local/dev only. See [`docs/public-boundary.md`](docs/
 ## License
 
 See package licenses under `packages/`. Root studio follows MIT unless a nested package states otherwise.
+
+
+---
+
+## FDE bar (this studio)
+
+| Practice | Here |
+| --- | --- |
+| Employer summary | top of README |
+| 60s / smoke proof | fde-portfolio smoke PASS |
+| Public boundary |  |
+| Claim under test | '"rigforge demo catches forged done"' |
+| Related fleet | [profile](https://github.com/mrodgersjs-web) · [resume](https://github.com/mrodgersjs-web/resume) · [patents teaser](https://github.com/mrodgersjs-web/patents) |
+
+If fde-portfolio smoke PASS fails, the README claim is considered false until fixed.
