@@ -1,6 +1,8 @@
 # proof-studio
 
 > Catch AI coding agents when they lie about “done” — cryptographically signed ProofPackets make completion claims re-verifiable.
+**Outcome:** `rigforge demo` catches the planted forge — HMAC signature check fails closed in the 60-second proof, backed by the offline honesty benchmark and 4 enumerated evaluation gates.
+
 
 ![status](https://img.shields.io/badge/status-public-studio-blue)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
