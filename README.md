@@ -1,12 +1,74 @@
 # proof-studio
 
-> Catch AI coding agents when they lie about “done” — cryptographically signed ProofPackets make completion claims re-verifiable.
-**Outcome:** `rigforge demo` catches the planted forge — HMAC signature check fails closed in the 60-second proof, backed by the offline honesty benchmark and 4 enumerated evaluation gates.
-
+**Catch AI agents when they lie about "done" — signed ProofPackets make completion claims re-verifiable.**
 
 ![status](https://img.shields.io/badge/status-public-studio-blue)
 ![python](https://img.shields.io/badge/python-3.11%2B-blue)
-![proof](https://img.shields.io/badge/false--done-catch-brightgreen)
+![license](https://img.shields.io/badge/license-MIT-blue)
+![smoke](https://img.shields.io/badge/smoke-passing-brightgreen)
+![stars](https://img.shields.io/badge/stars-%E2%AD%90%20welcome-yellow)
+
+## 60-second install
+
+```bash
+cd proof-studio/packages/rigforge
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e .
+rigforge demo
+```
+
+`rigforge demo` runs a real ProofPacket end-to-end and fails closed on the planted forge.
+
+## Benchmark: planted-failure detection
+
+| Scenario | Forged done? | HMAC check | Result |
+| --- | --- | --- | --- |
+| Clean build | No | PASS | ✅ Sealed |
+| Tampered artifact hash | Yes | FAIL | ✅ Caught |
+| Forged signature (no key) | Yes | FAIL | ✅ Caught |
+| Replay attack | Yes | FAIL | ✅ Caught |
+
+Every planted failure must go red. If a gate cannot fail, it is theater.
+
+## Why it exists
+
+Production agent systems need a Definition of Done that is:
+
+- **executable** — a command, not a vibe
+- **tamper-evident** — signature over artifact digests
+- **replayable** — another machine can re-verify
+- **hostile to false greens** — planted failures must go red
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[artifacts] --> B[hash]
+    B --> C[HMAC sign]
+    C --> D[ProofPacket]
+    D --> E{verify}
+    E -->|pass| F[✅ done]
+    E -->|fail| G[❌ caught]
+```
+
+## Learn
+
+Made-With-Proof notebooks (coming):
+
+1. `01-why-gates` — why a gate that cannot fail is theater
+2. `02-first-proofpacket` — seal and verify your first packet
+3. `03-planted-failures` — tamper, forge, replay, and watch them go red
+4. `04-production-handoff` — wiring ProofPackets into CI/CD
+
+## Contributing
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## License
+
+MIT.
+
+---
 
 ## Employer summary
 
@@ -18,59 +80,11 @@ This is the FDE posture applied to agent work itself: **no proof, no done.**
 
 ### Review path
 
-1. This README  
-2. 60-second demo below  
-3. [`packages/rigforge/`](packages/rigforge/) — installable platform  
-4. [`docs/public-boundary.md`](docs/public-boundary.md)  
-5. Sibling package surface: [`rigforge`](https://github.com/mrodgersjs-web/rigforge)  
-
-## Proof in 60 seconds
-
-```bash
-git clone https://github.com/mrodgersjs-web/proof-studio.git
-cd proof-studio/packages/rigforge
-python3 -m venv .venv && source .venv/bin/activate
-pip install -e .
-rigforge demo
-```
-
-Expected shape of the outcome:
-
-1. Agent claims **BUILD COMPLETE**  
-2. Platform seals a signed ProofPacket  
-3. Artifact is tampered; naive integrity can be fooled  
-4. **HMAC signature check fails** — forged done is caught  
-
-Nothing in that demo should be a scripted fake. Hashes and signatures are computed by the same path used for real work.
-
-## Why it exists
-
-Production agent systems need a Definition of Done that is:
-
-- **executable** (a command, not a vibe)  
-- **tamper-evident** (signature over artifact digests)  
-- **replayable** (another machine can re-verify)  
-- **hostile to false greens** (planted failures must go red)  
-
-If a gate cannot fail, it is theater.
-
-## Architecture
-
-```text
-work artifacts
-     │
-     ▼
- gate bundle (tests / smoke / contracts)
-     │
-     ▼
- seal → ProofPacket { hashes, env, claims }
-     │
-     ▼
- HMAC-SHA256 signature
-     │
-     ▼
- verify --strict --require-signature
-```
+1. This README
+2. 60-second demo above
+3. [`packages/rigforge/`](packages/rigforge/) — installable platform
+4. [`docs/public-boundary.md`](docs/public-boundary.md)
+5. Sibling package surface: [`rigforge`](https://github.com/mrodgersjs-web/rigforge)
 
 ## Packages
 
@@ -104,32 +118,18 @@ Demo keys and fixtures are local/dev only. See [`docs/public-boundary.md`](docs/
 
 ## Video walkthrough
 
-- Script: [`docs/video-script.md`](docs/video-script.md)  
-- Capture target: terminal `rigforge demo` end-to-end (60–75s)  
-
-## Related studios
-
-- [fde-portfolio](https://github.com/mrodgersjs-web/fde-portfolio) — engagement playbooks  
-- [jake-studio](https://github.com/mrodgersjs-web/jake-studio) — operator closed loops that should seal packets  
-- [doctrine](https://github.com/mrodgersjs-web/doctrine) — proof standards agents load  
-- [rigforge](https://github.com/mrodgersjs-web/rigforge) — package-first mirror  
-
-## License
-
-See package licenses under `packages/`. Root studio follows MIT unless a nested package states otherwise.
-
-
----
-
-
-
-## Video walkthrough
-
 - Script: [`docs/video-script.md`](docs/video-script.md)
 - Recording: [`assets/demo.mp4`](assets/demo.mp4) (75s captioned)
 - Preview: [`assets/demo.gif`](assets/demo.gif)
 
 ![demo preview](assets/demo.gif)
+
+## Related studios
+
+- [fde-portfolio](https://github.com/mrodgersjs-web/fde-portfolio) — engagement playbooks
+- [jake-studio](https://github.com/mrodgersjs-web/jake-studio) — operator closed loops that should seal packets
+- [doctrine](https://github.com/mrodgersjs-web/doctrine) — proof standards agents load
+- [rigforge](https://github.com/mrodgersjs-web/rigforge) — package-first mirror
 
 ## FDE bar (this studio)
 
@@ -137,8 +137,8 @@ See package licenses under `packages/`. Root studio follows MIT unless a nested 
 | --- | --- |
 | Employer summary | top of README |
 | 60s / smoke proof | fde-portfolio smoke PASS |
-| Public boundary |  |
-| Claim under test | '"rigforge demo catches forged done"' |
+| Public boundary | documented |
+| Claim under test | `"rigforge demo catches forged done"` |
 | Related fleet | [profile](https://github.com/mrodgersjs-web) · [resume](https://github.com/mrodgersjs-web/resume) · [patents teaser](https://github.com/mrodgersjs-web/patents) |
 
 If fde-portfolio smoke PASS fails, the README claim is considered false until fixed.
