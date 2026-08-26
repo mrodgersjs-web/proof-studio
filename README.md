@@ -1,4 +1,5 @@
 <div align="center">
+<p align="center"><img src="docs/proof-studio-demo.gif" alt="proof-studio demo" width="720" /></p>
   <img src="assets/proof-studio-hero.png" width="100%" />
 </div>
 
