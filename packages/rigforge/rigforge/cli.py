@@ -8,8 +8,10 @@ Top-level commands::
     rigforge doctor                     # diagnose env, repo layout, contracts
     rigforge status [--json]            # phase seal status
     rigforge run PHASE [--dry-run] [--json]
-    rigforge seal PHASE [--artifact PATH ...] [--evidence TEXT]
-    rigforge verify [--strict] [--json]
+    rigforge challenge issue PHASE      # per-run nonce for a bound seal
+    rigforge seal PHASE [--artifact PATH ...] [--evidence TEXT] [--challenge NONCE]
+    rigforge verify [--strict] [--require-signature] [--json]
+    rigforge verify --require-binding --expect-project ID --expect-challenge N=NONCE
     rigforge benchmark [--seed N]              # OFFLINE honesty gate (real numbers)
     rigforge diff PROOF_A.json PROOF_B.json   # MODEL-DIFF two ProofPackets
     rigforge contract list|validate|create|inspect
@@ -366,14 +368,24 @@ def trace(click_ctx: click.Context, phase: int, dry_run: bool):
 @click.option("--spec", "spec_path", default=None, type=click.Path(exists=True),
               help="Bind a spec file: the proof carries (signed) its acceptance criteria, "
                    "checkable later with `rigforge spec-check`.")
+@click.option("--challenge", default=None,
+              help="Per-run challenge from `rigforge challenge issue N`. Signs the project "
+                   "id + challenge into the packet so `verify --require-binding` can reject "
+                   "cross-project and stale replays. The challenge is consumed.")
 @click.pass_context
 def seal(click_ctx: click.Context, phase: int, artifacts: tuple[Path, ...],
          evidence: str | None, verifier: str | None, force: bool, eval_loop: bool,
-         spec_path: str | None):
+         spec_path: str | None, challenge: str | None):
     """Seal phase N: writes a ProofPacket with checksums + run envelope."""
     ctx = _ctx(click_ctx)
     harness = ArchonHarness(ctx)
     actor = verifier or _verifier_identity()
+    if challenge is not None and not (
+        harness.config.signing.enabled and harness.config.resolve_signing_key(ctx.root)
+    ):
+        click.echo("❌ --challenge needs a signing key: an unsigned binding can be edited "
+                   "by anyone. Run `rigforge init` or set RIGFORGE_SIGNING_KEY.")
+        sys.exit(2)
     spec_binding = None
     if spec_path:
         from rigforge.spec import Spec, SpecBinding
@@ -397,6 +409,18 @@ def seal(click_ctx: click.Context, phase: int, artifacts: tuple[Path, ...],
         )
         sys.exit(1)
 
+    replay_binding = None
+    if challenge is not None:
+        from rigforge.binding import BindingError, bind_for_seal
+
+        try:
+            replay_binding = bind_for_seal(ctx.root, phase, harness.config.project, challenge)
+        except BindingError as exc:
+            message = str(exc)
+            _emit(click_ctx, lambda: click.echo(f"❌ Refusing to seal Phase {phase}: {message}"),
+                  {"ok": False, "phase": phase, "message": message})
+            sys.exit(2)
+
     packet = harness.seal(
         phase,
         verifier=actor,
@@ -406,6 +430,7 @@ def seal(click_ctx: click.Context, phase: int, artifacts: tuple[Path, ...],
         envelope=run_result.envelope,
         eval_loop=run_result.eval_loop if run_result.eval_loop.enabled else None,
         spec=spec_binding,
+        binding=replay_binding,
     )
     # When tracing is on, emit the gate spans and a root span carrying the
     # sealed packet hash (the integrity anchor users search for in Jaeger/Phoenix).
@@ -420,6 +445,8 @@ def seal(click_ctx: click.Context, phase: int, artifacts: tuple[Path, ...],
         "proof": str(proof_path.relative_to(ctx.root)),
         "packet_sha256": packet.packet_sha256,
         "artifact_count": len(packet.artifacts),
+        "bound": packet.binding is not None,
+        "project_id": packet.binding.project_id if packet.binding else None,
     }
     _emit(
         click_ctx,
@@ -439,11 +466,62 @@ def seal(click_ctx: click.Context, phase: int, artifacts: tuple[Path, ...],
               help="Require integrity hash + phase-order continuity (no gaps).")
 @click.option("--require-signature", is_flag=True, default=False,
               help="Also verify the HMAC signature on each proof packet (G006).")
+@click.option("--require-binding", is_flag=True, default=False,
+              help="Fail unless every sealed phase is signed AND carries a replay binding "
+                   "matching --expect-project and its --expect-challenge (implies "
+                   "--require-signature).")
+@click.option("--expect-project", default=None,
+              help="Trusted project id the packets must be bound to (supplied by the caller, "
+                   "never read from the packets).")
+@click.option("--expect-challenge", "expect_challenge", multiple=True, metavar="N=NONCE",
+              help="Trusted challenge issued for phase N in this run (repeatable).")
+@click.option("--expectations", "expectations_file", default=None,
+              type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              help='Caller-owned JSON {"project_id": ..., "challenges": {"N": ...}}. '
+                   "Keep it outside the project directory the agent can write.")
+@click.option("--allow-unbound", is_flag=True, default=False,
+              help="Legacy opt-in: accept packets sealed without a binding (pre-1.3.0) with a "
+                   "warning. Refused together with --require-binding.")
 @click.pass_context
-def verify(click_ctx: click.Context, strict: bool, require_signature: bool):
-    """Verify all sealed phases: schema, integrity hash, phase order, signature."""
+def verify(click_ctx: click.Context, strict: bool, require_signature: bool,
+           require_binding: bool, expect_project: str | None,
+           expect_challenge: tuple[str, ...], expectations_file: Path | None,
+           allow_unbound: bool):
+    """Verify all sealed phases: schema, integrity hash, phase order, signature, binding."""
     ctx = _ctx(click_ctx)
+    from rigforge.binding import (
+        BindingError,
+        ReplayExpectations,
+        load_expectations_file,
+        parse_expect_challenge,
+        verify_proofs,
+    )
     from rigforge.config import load_config
+
+    try:
+        challenges: dict[int, str] = {}
+        file_project: str | None = None
+        if expectations_file is not None:
+            file_project, challenges = load_expectations_file(expectations_file)
+        for ph, val in parse_expect_challenge(expect_challenge).items():
+            if ph in challenges and challenges[ph] != val:
+                raise BindingError(f"phase {ph} has different challenges in flags and file")
+            challenges[ph] = val
+        if expect_project is not None and file_project is not None \
+                and expect_project != file_project:
+            raise BindingError("--expect-project disagrees with the expectations file")
+        expectations = ReplayExpectations(
+            project_id=expect_project if expect_project is not None else file_project,
+            challenges=challenges,
+            require=require_binding,
+            allow_unbound=allow_unbound,
+        )
+        expectations.validate()
+    except (BindingError, ValueError) as exc:
+        click.echo(f"❌ {exc}")
+        sys.exit(2)
+    if require_binding:
+        require_signature = True
 
     try:
         cfg = load_config(ctx)
@@ -455,58 +533,17 @@ def verify(click_ctx: click.Context, strict: bool, require_signature: bool):
                    "(set RIGFORGE_SIGNING_KEY or configure signing.key_file in rigforge.yaml).")
         sys.exit(2)
 
-    phase_reports: list[dict] = []
-    sealed_phases: list[int] = []
-    errors: list[str] = []
-
-    for p, name in PHASES.items():
-        path = ctx.proof_file(p)
-        if not path.exists():
-            phase_reports.append({"phase": p, "name": name, "sealed": False})
-            continue
-        try:
-            packet = ProofPacket.load(path)
-        except Exception as exc:  # noqa: BLE001
-            phase_reports.append({"phase": p, "name": name, "sealed": True, "error": str(exc)})
-            errors.append(f"Phase {p}: schema invalid — {exc}")
-            continue
-        sealed_phases.append(p)
-        integrity = packet.verify_integrity()
-        signature_ok: bool | None = None
-        if signing_key is not None and packet.signature:
-            signature_ok = packet.verify_signature(signing_key)
-        report = {
-            "phase": p,
-            "name": name,
-            "sealed": True,
-            "verifier": packet.verifier,
-            "artifact_count": len(packet.artifacts),
-            "integrity_ok": integrity,
-            "signed": bool(packet.signature),
-            "signature_ok": signature_ok,
-        }
-        if strict and not integrity and packet.schema_version != "0.0.0":
-            errors.append(f"Phase {p}: integrity hash mismatch.")
-        if packet.schema_version != "0.0.0" and not packet.matches_claim(p, name):
-            errors.append(
-                f"Phase {p}: packet was sealed for phase {packet.phase} "
-                f"{packet.name!r}, not phase {p} {name!r} (replayed proof)."
-            )
-        if require_signature:
-            if not packet.signature:
-                errors.append(f"Phase {p}: proof packet is not signed.")
-            elif signature_ok is False:
-                errors.append(f"Phase {p}: signature does not verify.")
-        phase_reports.append(report)
-
-    if strict and sealed_phases:
-        expected = list(range(1, max(sealed_phases) + 1))
-        gaps = sorted(set(expected) - set(sealed_phases))
-        if gaps:
-            errors.append(f"phase-order gaps (strict): missing {gaps}")
-
-    ok = not errors
-    payload = {"ok": ok, "strict": strict, "phases": phase_reports, "errors": errors}
+    payload = verify_proofs(
+        ctx,
+        strict=strict,
+        require_signature=require_signature,
+        signing_key=signing_key,
+        expectations=expectations,
+    )
+    ok = payload["ok"]
+    phase_reports = payload["phases"]
+    errors = payload["errors"]
+    warnings = payload["warnings"]
 
     def render():
         click.echo("🔍 Verifying all phases...")
@@ -522,6 +559,8 @@ def verify(click_ctx: click.Context, strict: bool, require_signature: bool):
                     f"(verifier={r['verifier']}, artifacts={r['artifact_count']})"
                 )
         click.echo()
+        for w in warnings:
+            click.echo(f"   note: {w}")
         if ok:
             click.echo("✅ Verify complete.")
         else:
@@ -532,6 +571,37 @@ def verify(click_ctx: click.Context, strict: bool, require_signature: bool):
     _emit(click_ctx, render, payload)
     if not ok:
         sys.exit(1)
+
+
+# ── challenge (per-run replay nonce) ─────────────────────────────────────
+
+
+@main.group("challenge")
+def challenge_group():
+    """Per-run challenges that bind a seal to one project and one run."""
+
+
+@challenge_group.command("issue")
+@click.argument("phase", type=click.IntRange(1, 7))
+@click.pass_context
+def challenge_issue(click_ctx: click.Context, phase: int):
+    """Issue a fresh challenge for phase N; keep the printed value as the caller.
+
+    Pass it to `rigforge seal N --challenge <value>` and later to
+    `rigforge verify --require-binding --expect-challenge N=<value>`.
+    """
+    ctx = _ctx(click_ctx)
+    from rigforge.binding import BindingError, ChallengeStore
+    from rigforge.config import load_config
+
+    try:
+        cfg = load_config(ctx)
+        value = ChallengeStore(ctx.root).issue(phase, cfg.project)
+    except (BindingError, ValueError) as exc:
+        click.echo(f"❌ {exc}")
+        sys.exit(2)
+    payload = {"ok": True, "phase": phase, "project_id": cfg.project, "challenge": value}
+    _emit(click_ctx, lambda: click.echo(value), payload)
 
 
 # ── demo (live tamper-detection wedge) ───────────────────────────────────
@@ -1199,9 +1269,12 @@ def goal(click_ctx: click.Context, phases_csv: str | None, up_to: int | None,
                    "Falls back to RIGFORGE_MCP_TOKEN / rigforge.yaml.")
 @click.option("--require-auth", is_flag=True, default=False,
               help="Refuse to start without a token (off by default for the local dashboard).")
+@click.option("--expect-project", default=None,
+              help="Trusted project id for replay binding. Enables /api/phases/{n}/challenge "
+                   "and /api/verify?require_binding=true.")
 @click.pass_context
 def serve(click_ctx: click.Context, host: str | None, port: int | None,
-          auth_token: str | None, require_auth: bool):
+          auth_token: str | None, require_auth: bool, expect_project: str | None):
     """Boot the full-stack cockpit: REST API + single-page app (G011)."""
     ctx = _ctx(click_ctx)
     from rigforge.config import load_config
@@ -1216,7 +1289,8 @@ def serve(click_ctx: click.Context, host: str | None, port: int | None,
         from rigforge.mcp_server import MCPInsecureBindError
 
         try:
-            app = build_app(ctx, auth_token=token, allow_insecure=not require_auth)
+            app = build_app(ctx, auth_token=token, allow_insecure=not require_auth,
+                            expected_project=expect_project)
         except MCPInsecureBindError as exc:
             click.echo(f"❌ {exc}")
             sys.exit(2)

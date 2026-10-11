@@ -35,8 +35,20 @@ from rigforge.proof import ProofPacket
 WEB_DIR = Path(__file__).parent / "web"
 
 
-def _verify_payload(ctx: ProjectContext, *, strict: bool = False) -> dict[str, Any]:
-    """Build the same verify report the CLI emits, as a plain dict."""
+def _verify_payload(
+    ctx: ProjectContext,
+    *,
+    strict: bool = False,
+    require_binding: bool = False,
+    expected_project: str | None = None,
+    challenges: dict[int, str] | None = None,
+) -> dict[str, Any]:
+    """Build the same verify report the CLI emits, as a plain dict.
+
+    Binding expectations come from the server (its pinned ``expected_project``
+    and the challenges it issued itself), never from the packets on disk.
+    """
+    from rigforge.binding import BindingError, ReplayExpectations, verify_proofs
     from rigforge.config import load_config
 
     try:
@@ -45,55 +57,34 @@ def _verify_payload(ctx: ProjectContext, *, strict: bool = False) -> dict[str, A
         cfg = None
     signing_key = cfg.resolve_signing_key(ctx.root) if cfg is not None else None
 
-    phase_reports: list[dict] = []
-    sealed_phases: list[int] = []
-    errors: list[str] = []
-
-    for p, name in PHASES.items():
-        path = ctx.proof_file(p)
-        if not path.exists():
-            phase_reports.append({"phase": p, "name": name, "sealed": False})
-            continue
+    expectations = ReplayExpectations(
+        project_id=expected_project if require_binding else None,
+        challenges=dict(challenges or {}) if require_binding else {},
+        require=require_binding,
+    )
+    pre_errors: list[str] = []
+    if require_binding:
         try:
-            packet = ProofPacket.load(path)
-        except Exception as exc:  # noqa: BLE001
-            phase_reports.append({"phase": p, "name": name, "sealed": True, "error": str(exc)})
-            errors.append(f"Phase {p}: schema invalid — {exc}")
-            continue
-        sealed_phases.append(p)
-        integrity = packet.verify_integrity()
-        signature_ok: bool | None = None
-        if signing_key is not None and packet.signature:
-            signature_ok = packet.verify_signature(signing_key)
-        if strict and not integrity and packet.schema_version != "0.0.0":
-            errors.append(f"Phase {p}: integrity hash mismatch.")
-        if packet.schema_version != "0.0.0" and not packet.matches_claim(p, name):
-            errors.append(
-                f"Phase {p}: packet was sealed for phase {packet.phase} "
-                f"{packet.name!r}, not phase {p} {name!r} (replayed proof)."
-            )
-        phase_reports.append({
-            "phase": p,
-            "name": name,
-            "sealed": True,
-            "verifier": packet.verifier,
-            "artifact_count": len(packet.artifacts),
-            "integrity_ok": integrity,
-            "signed": bool(packet.signature),
-            "signature_ok": signature_ok,
-        })
-
-    if strict and sealed_phases:
-        expected = list(range(1, max(sealed_phases) + 1))
-        gaps = sorted(set(expected) - set(sealed_phases))
-        if gaps:
-            errors.append(f"phase-order gaps (strict): missing {gaps}")
-
-    return {"ok": not errors, "strict": strict, "phases": phase_reports, "errors": errors}
+            expectations.validate()
+        except BindingError as exc:
+            pre_errors.append(str(exc))
+        if signing_key is None:
+            pre_errors.append("require_binding needs a signing key on the server.")
+    if pre_errors:
+        return {"ok": False, "strict": strict, "binding_checked": require_binding,
+                "binding_required": require_binding, "phases": [], "errors": pre_errors,
+                "warnings": []}
+    return verify_proofs(
+        ctx,
+        strict=strict,
+        require_signature=require_binding,
+        signing_key=signing_key,
+        expectations=expectations,
+    )
 
 
 def build_app(ctx: ProjectContext, *, auth_token: str | None = None,
-              allow_insecure: bool = True):
+              allow_insecure: bool = True, expected_project: str | None = None):
     """Build the full-stack FastAPI app.
 
     ``auth_token`` gates the ``/api/*`` surface (the SPA, ``/`` and ``/health``
@@ -101,6 +92,11 @@ def build_app(ctx: ProjectContext, *, auth_token: str | None = None,
     defaults to ``allow_insecure=True`` because it is a read-mostly local
     dashboard — but a configured token is honoured and enforced. Pass
     ``allow_insecure=False`` to require a token.
+
+    ``expected_project`` is the trusted project id for replay binding (from
+    ``rigforge serve --expect-project``). Challenges issued through
+    ``POST /api/phases/{n}/challenge`` live only in this process's memory; the
+    newest one per phase is what ``/api/verify?require_binding=true`` expects.
     """
     try:
         from fastapi import FastAPI, HTTPException
@@ -126,6 +122,9 @@ def build_app(ctx: ProjectContext, *, auth_token: str | None = None,
         description="Full-stack mission-control: REST API + SPA over the deterministic harness.",
     )
     app.state.auth_token = token
+    app.state.expected_project = (expected_project or "").strip() or None
+    # phase -> {"challenge": str, "status": "open" | "consumed"}; server memory only.
+    app.state.challenges = {}
 
     # Open paths the SPA needs before it can present a token, plus docs.
     OPEN_PATHS = {"/", "/health", "/openapi.json", "/docs", "/redoc"}
@@ -203,14 +202,57 @@ def build_app(ctx: ProjectContext, *, auth_token: str | None = None,
         result = harness.run(n, dry_run=dry_run, verifier="cockpit")
         return result.to_dict()
 
+    @app.post("/api/phases/{n}/challenge")
+    def api_challenge(n: int) -> dict[str, Any]:
+        from rigforge.binding import new_challenge
+
+        if not 1 <= n <= 7:
+            raise HTTPException(status_code=404, detail="phase out of range (1-7)")
+        if app.state.expected_project is None:
+            raise HTTPException(
+                status_code=409,
+                detail="server has no trusted project id; start it with --expect-project",
+            )
+        value = new_challenge()
+        # A new challenge replaces the old one: a packet sealed in an earlier
+        # run of this phase no longer matches what verify expects.
+        app.state.challenges[n] = {"challenge": value, "status": "open"}
+        return {"phase": n, "challenge": value, "project_id": app.state.expected_project}
+
     @app.post("/api/phases/{n}/seal")
     def api_seal(n: int, body: dict | None = None) -> dict[str, Any]:
+        import hmac as _hmac
+
+        from rigforge.binding import BindingError, validate_project_id
+        from rigforge.proof import ProofBinding
+
         if not 1 <= n <= 7:
             raise HTTPException(status_code=404, detail="phase out of range (1-7)")
         body = body or {}
         evidence = body.get("evidence")
         force = bool(body.get("force", False))
+        challenge = body.get("challenge")
         harness = ArchonHarness(ctx)
+        binding = None
+        if challenge is not None:
+            issued = app.state.challenges.get(n)
+            if issued is None or not _hmac.compare_digest(
+                str(issued["challenge"]).encode(), str(challenge).encode()
+            ):
+                raise HTTPException(status_code=409,
+                                    detail="challenge was not issued by this server for this phase")
+            if issued["status"] != "open":
+                raise HTTPException(status_code=409,
+                                    detail="challenge was already used for a seal (reused nonce)")
+            if not (harness.config.signing.enabled
+                    and harness.config.resolve_signing_key(ctx.root)):
+                raise HTTPException(status_code=409,
+                                    detail="a bound seal needs a signing key")
+            try:
+                project_id = validate_project_id(harness.config.project)
+            except BindingError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            binding = ProofBinding(project_id=project_id, challenge=str(challenge))
         run_result = harness.run(n, verifier="cockpit")
         if run_result.blockers and not force:
             raise HTTPException(
@@ -223,18 +265,28 @@ def build_app(ctx: ProjectContext, *, auth_token: str | None = None,
         packet = harness.seal(
             n, verifier="cockpit", evidence=evidence,
             gates=run_result.gates, envelope=run_result.envelope,
+            binding=binding,
         )
+        if binding is not None:
+            app.state.challenges[n]["status"] = "consumed"
         return {
             "ok": True,
             "phase": n,
             "packet_sha256": packet.packet_sha256,
             "signed": bool(packet.signature),
+            "bound": packet.binding is not None,
             "proof": str(ctx.proof_file(n).relative_to(ctx.root)),
         }
 
     @app.get("/api/verify")
-    def api_verify(strict: bool = False) -> dict[str, Any]:
-        return _verify_payload(ctx, strict=strict)
+    def api_verify(strict: bool = False, require_binding: bool = False) -> dict[str, Any]:
+        return _verify_payload(
+            ctx,
+            strict=strict,
+            require_binding=require_binding,
+            expected_project=app.state.expected_project,
+            challenges={p: c["challenge"] for p, c in app.state.challenges.items()},
+        )
 
     @app.get("/api/contracts")
     def api_contracts() -> dict[str, Any]:

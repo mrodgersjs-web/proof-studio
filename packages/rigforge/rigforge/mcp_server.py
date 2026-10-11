@@ -160,9 +160,28 @@ def seal_and_verify(
     (Move #2): the spec's acceptance criteria are bound into the signed packet
     and the verdict is REJECTED unless every criterion has a passing gate — so
     an agent that skips a requirement is caught even when the artifact is intact.
+
+    Replay binding: the server issues a fresh challenge for this call and seals
+    it with the project id into the signed packet, then checks the packet's
+    binding against the values the server holds (never the packet's own
+    copy). The project id comes from ``RIGFORGE_PROJECT_ID`` in the server's
+    environment or, failing that, ``project`` in the server's rigforge.yaml;
+    neither is a tool argument, so the calling agent cannot choose it. When
+    the server has only a placeholder project name, the packet is sealed
+    without a binding and ``binding_ok`` is ``None`` (the fresh verdict still
+    stands; a later ``verify --require-binding`` on such a packet fails).
     """
+    import os
+
+    from rigforge.binding import (
+        BindingError,
+        ReplayExpectations,
+        check_binding,
+        new_challenge,
+        validate_project_id,
+    )
     from rigforge.ledger import ExecutionLedger
-    from rigforge.proof import ArtifactRecord, GateOutcome, ProofPacket
+    from rigforge.proof import ArtifactRecord, GateOutcome, ProofBinding, ProofPacket
 
     key = _project_signing_key()
     root = Path.cwd()
@@ -181,6 +200,24 @@ def seal_and_verify(
 
         spec_binding = SpecBinding.of(Spec.from_file(spec))
 
+    replay_binding: ProofBinding | None = None
+    binding_error: str | None = None
+    trusted_project = os.environ.get("RIGFORGE_PROJECT_ID")
+    if not trusted_project:
+        from rigforge.config import load_config
+        from rigforge.context import ProjectContext
+
+        try:
+            trusted_project = load_config(ProjectContext.discover(root)).project
+        except Exception:  # noqa: BLE001
+            trusted_project = None
+    try:
+        trusted_project = validate_project_id(trusted_project)
+        server_challenge = new_challenge()
+        replay_binding = ProofBinding(project_id=trusted_project, challenge=server_challenge)
+    except BindingError as exc:
+        binding_error = str(exc)
+
     packet = ProofPacket(
         phase=phase,
         name=name,
@@ -189,10 +226,19 @@ def seal_and_verify(
         artifacts=records,
         gates=gate_outcomes,
         spec=spec_binding,
+        binding=replay_binding,
     ).sealed(signing_key=key)
 
     integrity_ok = packet.verify_integrity()
     signature_ok = packet.verify_signature(key)
+    binding_ok: bool | None = None
+    if replay_binding is not None:
+        b_errors, _ = check_binding(packet, phase, ReplayExpectations(
+            project_id=trusted_project,
+            challenges={phase: server_challenge},
+            require=True,
+        ))
+        binding_ok = not b_errors
 
     spec_result: dict[str, Any] | None = None
     if spec_binding is not None:
@@ -202,7 +248,8 @@ def seal_and_verify(
         spec_result = {"ok": sm.ok, "missing": sm.missing}
 
     accepted = bool(
-        integrity_ok and signature_ok and (spec_result["ok"] if spec_result else True)
+        integrity_ok and signature_ok and binding_ok is not False
+        and (spec_result["ok"] if spec_result else True)
     )
 
     ExecutionLedger(root / "ledger" / "execution.jsonl").append(
@@ -220,6 +267,11 @@ def seal_and_verify(
         "integrity_ok": integrity_ok,
         "signature_ok": signature_ok,
         "spec": spec_result,
+        "binding_ok": binding_ok,
+        "binding": (
+            {"project_id": replay_binding.project_id, "challenge": replay_binding.challenge}
+            if replay_binding is not None else {"error": binding_error}
+        ),
         "packet_sha256": packet.packet_sha256,
     }
 

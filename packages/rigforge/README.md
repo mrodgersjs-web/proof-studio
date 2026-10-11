@@ -202,7 +202,7 @@ force an agent to seal, or survive a stolen signing key. Those boundaries are st
 not buried — full trust model and what it deliberately doesn't defend against:
 **[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)**.
 
-**Replay limits.** `verify` rejects a valid packet placed in a phase slot it was not sealed for (different phase number or different phase name). It does **not** yet catch two other replays, because the signed packet carries no project id and no nonce: (1) a packet copied from another project that uses the same signing key, and (2) an older valid packet from an earlier run of the same phase. Use a separate signing key per project, and keep proofs under version control so an older packet shows up in review.
+**Replay binding.** `verify` rejects a valid packet placed in a phase slot it was not sealed for (different phase number or different phase name). Since schema 1.3.0 it can also reject the two other replays: (1) a packet copied from another project that uses the same signing key, and (2) an older valid packet from an earlier run of the same phase. The caller issues a challenge per run (`rigforge challenge issue N`), the seal signs the project id and that challenge into the packet (`rigforge seal N --challenge <nonce>`), and `rigforge verify --require-binding --expect-project <id> --expect-challenge N=<nonce>` compares them with the values the caller kept. The expected values must come from the caller (flags, or an `--expectations` file kept outside the project), never from the packet. Packets without a binding (sealed before 1.3.0, or without `--challenge`) fail `--require-binding`; `--allow-unbound` accepts them only when `--require-binding` is off. Plain `verify` and `verify --strict --require-signature` do **not** check the binding and still accept both replays; use `--require-binding` when replay matters. Limit: anyone who holds the signing key can seal any project id and challenge, so the binding stops replay of genuine packets, not forgery by a key holder. Runnable demo: `packages/rigforge/examples/replay_binding_demo.sh`.
 
 ## How it works
 
@@ -235,6 +235,9 @@ rigforge status                  # phase status        (--json for machine-reada
 rigforge run N [--dry-run]       # run phase N's deterministic gate bundle
 rigforge seal N --artifact PATH [--spec FILE]      # seal a phase (optionally spec-bound)
 rigforge verify [--strict] [--require-signature]   # re-check sealed phases
+rigforge challenge issue N                         # per-run nonce for a replay-bound seal
+rigforge seal N --challenge NONCE                  # sign project id + nonce into the packet
+rigforge verify --require-binding --expect-project ID --expect-challenge N=NONCE
 rigforge spec-check --proof P --spec S             # prove a build matched its spec
 rigforge resume                  # resume the most recent failed/unfinished phase
 rigforge benchmark               # the honesty benchmark (false-done-caught rate)

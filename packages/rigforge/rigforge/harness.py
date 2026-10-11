@@ -30,7 +30,7 @@ from rigforge.gates import (
 )
 from rigforge.ledger import ExecutionLedger
 from rigforge.spec import SpecBinding
-from rigforge.proof import ArtifactRecord, GateOutcome, ProofPacket
+from rigforge.proof import ArtifactRecord, GateOutcome, ProofBinding, ProofPacket
 from rigforge.run_envelope import RunEnvelope
 
 
@@ -383,6 +383,7 @@ class ArchonHarness:
         envelope: RunEnvelope | None = None,
         eval_loop: EvalLoopTranscript | None = None,
         spec: "SpecBinding | None" = None,
+        binding: ProofBinding | None = None,
     ) -> ProofPacket:
         artifact_records = [
             ArtifactRecord.from_path(Path(a), base=self.ctx.root) for a in (artifacts or [])
@@ -405,6 +406,7 @@ class ArchonHarness:
             run_envelope=envelope,
             eval_loop=loop_payload,
             spec=spec,
+            binding=binding,
         )
         path = self.ctx.proof_file(phase)
         signing_key = (
@@ -421,6 +423,7 @@ class ArchonHarness:
             artifact_count=len(artifact_records),
             gate_count=len(gate_records),
             signed=bool(signing_key),
+            bound=binding is not None,
         )
         return ProofPacket.load(path)
 

@@ -29,7 +29,7 @@ from rigforge.run_envelope import RunEnvelope
 from rigforge.spec import SpecBinding
 
 
-PROOF_SCHEMA_VERSION = "1.2.0"
+PROOF_SCHEMA_VERSION = "1.3.0"
 
 # Determinism honesty qualifier (G012).
 #
@@ -118,6 +118,26 @@ class GateOutcome(BaseModel):
         return self.kind == "llm-stochastic"
 
 
+class ProofBinding(BaseModel):
+    """Replay binding sealed into a packet (schema 1.3.0).
+
+    ``project_id`` names the project the packet was sealed for and
+    ``challenge`` is the per-run nonce issued *before* the run (``rigforge
+    challenge issue`` or the cockpit's ``/api/phases/{n}/challenge``). Both sit
+    inside the hashed and HMAC-signed payload, so neither can be edited without
+    the signing key.
+
+    The values in a packet are claims. They only prove something when a
+    verifier compares them with expectations it holds independently (caller
+    flags, a caller-owned expectations file, or server memory). Copying them
+    out of the packet and back into the check proves nothing; see
+    :func:`rigforge.binding.check_binding`.
+    """
+
+    project_id: str = Field(..., min_length=1, max_length=200)
+    challenge: str = Field(..., min_length=16, max_length=200)
+
+
 class ProofPacket(BaseModel):
     """Sealed, integrity-checked evidence that a phase is complete."""
 
@@ -142,6 +162,10 @@ class ProofPacket(BaseModel):
     # proofs still load. When present, carries the full per-gate attempt
     # history sealed into the packet.
     eval_loop: dict | None = Field(default=None)
+    # Replay binding (schema 1.3.0): signed project id + per-run challenge.
+    # None for packets sealed without a challenge and for every packet sealed
+    # before 1.3.0; such packets fail ``verify --require-binding``.
+    binding: ProofBinding | None = None
     packet_sha256: str = ""
     signature: str = Field(
         default="",
@@ -156,6 +180,11 @@ class ProofPacket(BaseModel):
         data.pop("packet_sha256", None)
         data.pop("signature", None)
         data.pop("signature_algo", None)
+        # Packets sealed before 1.3.0 have no ``binding`` key at all. Leaving
+        # an unset binding out of the hashed payload keeps their hashes (and
+        # signatures) valid after upgrade.
+        if data.get("binding") is None:
+            data.pop("binding", None)
         return json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     def compute_hash(self) -> str:
@@ -194,9 +223,11 @@ class ProofPacket(BaseModel):
         phase-slot replay: a genuine, still-valid packet re-submitted unchanged
         as proof for a different phase or a differently named claim.
 
-        It does NOT catch (no project id or nonce is in the signed payload):
-        a packet copied between projects that share a signing key, or an older
-        valid packet from an earlier run of the same phase and name.
+        On its own it does NOT catch a packet copied between projects that
+        share a signing key, or an older valid packet from an earlier run of
+        the same phase and name. Those need the signed ``binding`` compared
+        against independently held expectations
+        (:func:`rigforge.binding.check_binding`, ``verify --require-binding``).
         """
         if self.phase != phase:
             return False

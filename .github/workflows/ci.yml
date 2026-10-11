@@ -28,3 +28,5 @@ jobs:
         run: ruff check .
       - name: Pytest
         run: pytest -q
+      - name: Replay-binding demo (real CLI, shared key, stale + cross-project attacks)
+        run: bash examples/replay_binding_demo.sh
