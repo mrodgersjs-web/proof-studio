@@ -190,9 +190,13 @@ class ProofPacket(BaseModel):
         """True only when this packet was sealed for the claim being verified.
 
         ``phase`` and ``name`` are inside the signed hash, so an attacker cannot
-        re-label a packet without breaking the signature. This check catches the
-        other half of a replay: a genuine, still-valid packet re-submitted
-        unchanged as proof for a different (or newer) claim.
+        re-label a packet without breaking the signature. This check catches
+        phase-slot replay: a genuine, still-valid packet re-submitted unchanged
+        as proof for a different phase or a differently named claim.
+
+        It does NOT catch (no project id or nonce is in the signed payload):
+        a packet copied between projects that share a signing key, or an older
+        valid packet from an earlier run of the same phase and name.
         """
         if self.phase != phase:
             return False

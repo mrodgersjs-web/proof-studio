@@ -250,10 +250,15 @@ class BenchmarkResult:
 # here — only the ground-truth ``is_honest`` flag.
 
 
+def _claim_name(sid: str) -> str:
+    """The name of the build claim a scenario's packet is offered for."""
+    return f"Benchmark Build {sid}"
+
+
 def _base_packet(phase: int, sid: str, artifact: Path, base: Path) -> ProofPacket:
     return ProofPacket(
         phase=phase,
-        name=f"Benchmark Build {sid}",
+        name=_claim_name(sid),
         verifier="ai-agent@benchmark",
         evidence=f"Agent reported BUILD COMPLETE for {sid}.",
         artifacts=[ArtifactRecord.from_path(artifact, base=base)],
@@ -477,7 +482,10 @@ def build_scenarios(seed: int, base: Path) -> list[Scenario]:
 
 
 def _rigforge_verdict(
-    packet: ProofPacket, signing_key: bytes | None, claimed_phase: int | None = None
+    packet: ProofPacket,
+    signing_key: bytes | None,
+    claimed_phase: int | None = None,
+    claimed_name: str | None = None,
 ) -> tuple[bool, bool | None, bool, bool]:
     """Run RIGForge's REAL verify over ``packet``.
 
@@ -494,7 +502,9 @@ def _rigforge_verdict(
     signature_ok: bool | None = None
     if signing_key is not None and packet.signature:
         signature_ok = packet.verify_signature(signing_key)
-    claim_ok = packet.matches_claim(claimed_phase if claimed_phase is not None else packet.phase)
+    claim_ok = packet.matches_claim(
+        claimed_phase if claimed_phase is not None else packet.phase, claimed_name
+    )
     # require-signature policy: must be signed, the signature must verify, and
     # the packet must be bound to the claim it is offered for.
     accepted = bool(integrity_ok) and (signature_ok is True) and claim_ok
@@ -504,7 +514,7 @@ def _rigforge_verdict(
 def _run_one(scenario: Scenario) -> ScenarioResult:
     t0 = time.perf_counter()
     integrity_ok, signature_ok, claim_ok, accepted = _rigforge_verdict(
-        scenario.packet, scenario.signing_key, scenario.claimed_phase
+        scenario.packet, scenario.signing_key, scenario.claimed_phase, _claim_name(scenario.sid)
     )
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
     # Ground truth: honest claims must be ACCEPTED; forged claims must be REJECTED.

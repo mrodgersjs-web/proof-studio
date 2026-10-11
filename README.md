@@ -53,6 +53,8 @@ rigforge demo
 
 <sup>Every planted failure must go red. If a gate cannot fail, it is theater.</sup>
 
+**Replay limits.** `verify` rejects a valid packet placed in a phase slot it was not sealed for (different phase number or different phase name). It does **not** yet catch two other replays, because the signed packet carries no project id and no nonce: (1) a packet copied from another project that uses the same signing key, and (2) an older valid packet from an earlier run of the same phase. Use a separate signing key per project, and keep proofs under version control so an older packet shows up in review.
+
 ## Why it exists
 
 Production agent systems need a Definition of Done that is:

@@ -202,6 +202,8 @@ force an agent to seal, or survive a stolen signing key. Those boundaries are st
 not buried — full trust model and what it deliberately doesn't defend against:
 **[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)**.
 
+**Replay limits.** `verify` rejects a valid packet placed in a phase slot it was not sealed for (different phase number or different phase name). It does **not** yet catch two other replays, because the signed packet carries no project id and no nonce: (1) a packet copied from another project that uses the same signing key, and (2) an older valid packet from an earlier run of the same phase. Use a separate signing key per project, and keep proofs under version control so an older packet shows up in review.
+
 ## How it works
 
 Work flows through 7 explicit phases. Each phase runs a deterministic bundle of quality gates

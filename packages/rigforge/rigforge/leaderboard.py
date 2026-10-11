@@ -22,7 +22,14 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
 
-from rigforge.benchmark import DEFAULT_SEED, Scenario, _artifact_bytes, _RNG, build_scenarios
+from rigforge.benchmark import (
+    DEFAULT_SEED,
+    Scenario,
+    _artifact_bytes,
+    _claim_name,
+    _RNG,
+    build_scenarios,
+)
 from rigforge.proof import ArtifactRecord, GateOutcome, ProofPacket
 from rigforge.spec import SpecBinding, verify_spec
 
@@ -46,7 +53,7 @@ def _spec_gap_scenarios(seed: int, base: Path, n: int = 4) -> list[Scenario]:
         key = secrets.token_bytes(32)
         packet = ProofPacket(
             phase=1,
-            name=f"build {sid}",
+            name=_claim_name(sid),
             verifier="ai-agent@leaderboard",
             evidence="agent reported BUILD COMPLETE",
             artifacts=[ArtifactRecord.from_path(artifact, base=base)],
@@ -81,7 +88,7 @@ def _accepts(scenario: Scenario, strategy: str) -> bool:
         return integrity
     signature = bool(key and p.signature and p.verify_signature(key))
     claimed = scenario.claimed_phase if scenario.claimed_phase is not None else p.phase
-    claim = p.matches_claim(claimed)
+    claim = p.matches_claim(claimed, _claim_name(scenario.sid))
     if strategy == "signed (RIGForge core)":
         return integrity and signature and claim
     # spec-bound

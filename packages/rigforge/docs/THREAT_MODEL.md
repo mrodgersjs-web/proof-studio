@@ -28,6 +28,8 @@ Each is a scenario in `rigforge benchmark`, scored on real `verify_*` verdicts:
 - **Swapped artifact** — a different file substituted, hash re-pinned → signature fails.
 - **Dropped gate** — a failed gate flipped to "passed" and re-hashed → signature fails (gates are signed).
 - **Unsigned tamper** — tampered + re-hashed but never signed → rejected by the require-signature policy.
+- **Phase-slot replay** — a valid signed packet re-submitted for a different phase → rejected by the claim check
+  (`ProofPacket.matches_claim`, which compares the signed phase number and name to the slot being verified).
 
 The benchmark's **100%** catch rate is a *correctness* result, not a probabilistic
 score: an HMAC bound to the original hashes is cryptographically unforgeable without
@@ -46,6 +48,10 @@ the key, so these forgeries **must** fail. That's the point — and you can re-r
   *integrity and provenance*, not *correctness or safety* of the code itself.
 - **Weak gates.** A proof is only as meaningful as the gates it seals. Sealing a phase
   whose only gate is `echo ok` proves very little. Garbage gates in, garbage proof out.
+- **Cross-project replay with a shared key.** The signed payload has no project id, so a valid
+  packet copied from another project that uses the same signing key verifies. Use one key per project.
+- **Stale same-phase replay.** There is no nonce or freshness check, so an older valid packet from an
+  earlier run of the same phase and name still verifies. Keep proofs in version control and review changes.
 - **Supply-chain / dependency compromise**, host compromise, or side channels. Same as
   any signing scheme — the root of trust is the key and the machine that holds it.
 
