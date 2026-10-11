@@ -48,9 +48,9 @@ def test_benchmark_runs_and_catches_every_forgery():
     result = run_benchmark(seed=DEFAULT_SEED)
     d = result.to_dict()
 
-    assert d["scenario_count"] == 16
+    assert d["scenario_count"] == 17
     assert d["honest_count"] == 8
-    assert d["forged_count"] == 8
+    assert d["forged_count"] == 9
 
     # The headline honesty invariant: every forged "done" is caught, no honest
     # claim is wrongly blocked.
@@ -74,7 +74,36 @@ def test_benchmark_verdicts_come_from_real_crypto():
     forged = [s for s in result.scenarios if not s.is_honest]
     assert forged, "expected forged scenarios in the suite"
     for s in forged:
+        assert s.accepted is False
+        if s.kind == "replay":
+            # A replay carries a genuine signature; the claim binding catches it.
+            assert s.signature_ok is True
+            assert s.claim_ok is False
+            continue
         # signature_ok is False (caught) or None (unsigned_tamper → blocked by policy);
         # never True for a forgery.
         assert s.signature_ok is not True
-        assert s.accepted is False
+
+
+def test_replay_of_valid_packet_for_newer_claim_is_rejected():
+    """A genuine signed packet passes integrity AND signature, so only the
+    claim binding can catch it being re-submitted for a different phase."""
+    result = run_benchmark(seed=DEFAULT_SEED)
+    replays = [s for s in result.scenarios if s.kind == "replay"]
+    assert len(replays) == 1
+    r = replays[0]
+    assert r.integrity_ok is True
+    assert r.signature_ok is True
+    assert r.claim_ok is False
+    assert r.accepted is False
+    assert r.correct is True
+
+
+def test_matches_claim_binds_phase_and_name():
+    from rigforge.proof import ProofPacket
+
+    pkt = ProofPacket(phase=2, name="Build", verifier="t").sealed(signing_key=b"k" * 32)
+    assert pkt.matches_claim(2)
+    assert pkt.matches_claim(2, "Build")
+    assert not pkt.matches_claim(3)
+    assert not pkt.matches_claim(2, "Other")

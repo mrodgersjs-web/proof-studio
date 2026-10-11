@@ -2,8 +2,8 @@
 
 *How well does each verification strategy catch an AI agent that lies about "done"?*
 
-Scored against the seeded, offline forgery suite (12 forged claims across
-tampered-artifact, forged-signature, swapped-artifact, dropped-gate, unsigned-tamper, and
+Scored against the seeded, offline forgery suite (13 forged claims across
+tampered-artifact, forged-signature, swapped-artifact, dropped-gate, unsigned-tamper, replay, and
 skipped-spec-criterion classes). Every number is computed from real verify verdicts — reproduce
 it in one command:
 
@@ -13,9 +13,9 @@ rigforge benchmark --leaderboard
 
 | Verification strategy | False-done-caught rate | Caught / total |
 |---|---|---|
-| naive integrity | **0%** | 0/12 |
-| signed (RIGForge core) | **67%** | 8/12 |
-| spec-bound (RIGForge) | **100%** | 12/12 |
+| naive integrity | **0%** | 0/13 |
+| signed (RIGForge core) | **69%** | 9/13 |
+| spec-bound (RIGForge) | **100%** | 13/13 |
 
 **Read it top to bottom:**
 
@@ -23,7 +23,8 @@ rigforge benchmark --leaderboard
   and re-forges the hash sails right through. This is what "the build passed" usually means, and
   it catches **nothing**.
 - **signed (RIGForge core)** — adds an HMAC signature bound to the original hash. Now tampering,
-  forged signatures, swapped artifacts, and dropped gates are all caught. It still accepts a
+  forged signatures, swapped artifacts, and dropped gates are all caught, and a
+  valid packet re-submitted for a phase it was not sealed for (replay) is rejected by the claim check. It still accepts a
   validly-signed claim that simply *skipped a required criterion*.
 - **spec-bound (RIGForge)** — also binds the spec's acceptance criteria. A claim that's perfectly
   signed but didn't do the required work is **rejected**. This is the layer no observability or

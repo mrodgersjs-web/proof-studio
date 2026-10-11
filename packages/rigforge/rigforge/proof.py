@@ -186,6 +186,22 @@ class ProofPacket(BaseModel):
         ).hexdigest()
         return hmac.compare_digest(expected, self.signature)
 
+    def matches_claim(self, phase: int, name: str | None = None) -> bool:
+        """True only when this packet was sealed for the claim being verified.
+
+        ``phase`` and ``name`` are inside the signed hash, so an attacker cannot
+        re-label a packet without breaking the signature. This check catches
+        phase-slot replay: a genuine, still-valid packet re-submitted unchanged
+        as proof for a different phase or a differently named claim.
+
+        It does NOT catch (no project id or nonce is in the signed payload):
+        a packet copied between projects that share a signing key, or an older
+        valid packet from an earlier run of the same phase and name.
+        """
+        if self.phase != phase:
+            return False
+        return name is None or self.name == name
+
     # ── Persistence ────────────────────────────────────────────────────
 
     def write(self, path: Path, *, signing_key: bytes | None = None) -> Path:

@@ -197,6 +197,44 @@ class TestRunSealVerify:
         phase1 = next(p for p in payload["phases"] if p["phase"] == 1)
         assert phase1["integrity_ok"] is True
 
+    def test_verify_rejects_replayed_proof_for_newer_phase(self, runner, project):
+        _invoke(runner, project, "init")
+        artifact = project / "docs" / "evidence.txt"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text("hi")
+        assert _invoke(runner, project, "seal", "1", "--artifact", str(artifact)).exit_code == 0
+        # Replay: copy the valid phase-1 packet, unchanged, in as proof of phase 2.
+        phase1_file = next(project.rglob("phase1_proof.json"))
+        (phase1_file.parent / "phase2_proof.json").write_bytes(phase1_file.read_bytes())
+        result = _invoke(runner, project, "--json", "verify", "--strict")
+        payload = json.loads(result.output)
+        assert result.exit_code == 1
+        assert payload["ok"] is False
+        assert any("sealed for phase 1 " in e and "replayed proof" in e for e in payload["errors"])
+        phase2 = next(p for p in payload["phases"] if p["phase"] == 2)
+        assert phase2["integrity_ok"] is True  # the packet itself is genuine
+
+    def test_verify_rejects_same_phase_packet_with_different_name(self, runner, project):
+        from rigforge.config import DEFAULT_SIGNING_KEY_PATH
+        from rigforge.proof import ProofPacket
+
+        _invoke(runner, project, "init")
+        artifact = project / "docs" / "evidence.txt"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_text("hi")
+        assert _invoke(runner, project, "seal", "2", "--artifact", str(artifact)).exit_code == 0
+        key = (project / DEFAULT_SIGNING_KEY_PATH).read_bytes().strip()
+        phase2_file = next(project.rglob("phase2_proof.json"))
+        # A genuinely signed phase-2 packet, but for a differently named claim.
+        other = ProofPacket.load(phase2_file).model_copy(update={"name": "Some Other Claim"})
+        other.write(phase2_file, signing_key=key)
+        result = _invoke(runner, project, "--json", "verify", "--strict", "--require-signature")
+        payload = json.loads(result.output)
+        assert result.exit_code == 1
+        phase2 = next(p for p in payload["phases"] if p["phase"] == 2)
+        assert phase2["integrity_ok"] is True and phase2["signature_ok"] is True
+        assert any("'Some Other Claim'" in e and "replayed proof" in e for e in payload["errors"])
+
 
 # ── contract group ─────────────────────────────────────────────────────
 

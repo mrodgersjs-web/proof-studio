@@ -67,6 +67,11 @@ def _verify_payload(ctx: ProjectContext, *, strict: bool = False) -> dict[str, A
             signature_ok = packet.verify_signature(signing_key)
         if strict and not integrity and packet.schema_version != "0.0.0":
             errors.append(f"Phase {p}: integrity hash mismatch.")
+        if packet.schema_version != "0.0.0" and not packet.matches_claim(p, name):
+            errors.append(
+                f"Phase {p}: packet was sealed for phase {packet.phase} "
+                f"{packet.name!r}, not phase {p} {name!r} (replayed proof)."
+            )
         phase_reports.append({
             "phase": p,
             "name": name,

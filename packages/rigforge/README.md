@@ -90,26 +90,28 @@ is the smallest real integration — seal a claim, tamper it, watch the signatur
 
 Don't take the README's word for it either. RIGForge ships a seeded, offline, reproducible
 benchmark that runs forged-proof attack scenarios (tampered artifact, forged signature,
-swapped artifact, dropped gate, unsigned tamper) and reports the **false-done-caught rate** —
+swapped artifact, dropped gate, unsigned tamper, replay) and reports the **false-done-caught rate** —
 how often the signature check catches a lie that naive integrity misses:
 
 ```bash
 rigforge benchmark               # real crypto, deterministic seed, byte-identical across runs
 ```
 
-On the default seed it runs 16 scenarios — 8 honest, 8 forged across 5 attack classes — and
+On the default seed it runs 17 scenarios — 8 honest, 9 forged across 6 attack classes — and
 catches **every** forged "done" while wrongly blocking **zero** honest ones:
 
 ```
-false_done_caught_rate    1.00   (8/8 forgeries caught — 0 slipped through)
+false_done_caught_rate    1.00   (9/9 forgeries caught — 0 slipped through)
 false_pass_rate           0.00   (0/8 honest claims wrongly blocked)
-accuracy                  1.00   (16/16 verdicts correct)
+accuracy                  1.00   (17/17 verdicts correct)
 ```
 
 That 100% isn't a marketing number — it's the *point*: an HMAC bound to the original artifact
 hash is cryptographically unforgeable without the key, so a tampered "done" **must** fail the
 signature check. Every figure is tallied from actual `ProofPacket.verify_signature()` verdicts,
-not hardcoded — read [`rigforge/benchmark.py`](rigforge/benchmark.py) and re-run it yourself.
+not hardcoded. The replay scenario re-submits a genuine signed phase-N packet as proof of a
+newer phase: its signature is valid, so it is caught by `ProofPacket.matches_claim()`, which
+compares the signed phase to the claim being verified. Read [`rigforge/benchmark.py`](rigforge/benchmark.py) and re-run it yourself.
 
 Want to see *why each layer matters*? The **[false-done-caught leaderboard](docs/LEADERBOARD.md)**
 scores verification strategies head-to-head — naive integrity catches **0%**, signing **67%**,
@@ -199,6 +201,8 @@ and that nothing changed it since sealing. It does **not** make your code correc
 force an agent to seal, or survive a stolen signing key. Those boundaries are stated plainly,
 not buried — full trust model and what it deliberately doesn't defend against:
 **[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)**.
+
+**Replay limits.** `verify` rejects a valid packet placed in a phase slot it was not sealed for (different phase number or different phase name). It does **not** yet catch two other replays, because the signed packet carries no project id and no nonce: (1) a packet copied from another project that uses the same signing key, and (2) an older valid packet from an earlier run of the same phase. Use a separate signing key per project, and keep proofs under version control so an older packet shows up in review.
 
 ## How it works
 
