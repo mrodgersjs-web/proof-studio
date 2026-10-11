@@ -144,17 +144,21 @@ def test_same_key_cross_project_replay_rejected(runner, alpha, beta):
     assert any("cross-project replay" in e for e in payload["errors"])
 
 
-def test_before_fix_shape_same_key_cross_project_passes_without_binding(runner, alpha, beta):
-    """Documents the pre-1.3 gap: the old flags alone still accept the copy.
-
-    This is why --require-binding exists; it is not a regression.
-    """
-    assert _seal(runner, alpha, 1).exit_code == 0
-    assert _seal(runner, beta, 1).exit_code == 0
-    shutil.copy(_proof(alpha, 1), _proof(beta, 1))
-    res, payload = _verify(runner, beta, "--strict", "--require-signature")
-    assert res.exit_code == 0
-    assert any("replay binding not checked" in w for w in payload["warnings"])
+def test_old_strict_flags_without_expectations_fail_closed(runner, alpha, beta, tmp_path):
+    """B1: the pre-1.3 strict command no longer accepts stale or cross-project packets."""
+    na = _issue(runner, alpha, 1)
+    assert _seal(runner, alpha, 1, na).exit_code == 0
+    nb = _issue(runner, beta, 1)
+    assert _seal(runner, beta, 1, nb).exit_code == 0
+    shutil.copy(_proof(alpha, 1), _proof(beta, 1))  # cross-project BOUND packet
+    for flags in (["--strict", "--require-signature"], ["--strict"], ["--require-signature"]):
+        res = _cli(runner, beta, "verify", *flags)
+        assert res.exit_code == 2, (flags, res.output)
+        assert "trusted project id" in res.output
+    # Plain verify (no flags) fails closed too: no caller expectations.
+    res, payload = _verify(runner, beta)
+    assert res.exit_code == 1
+    assert any("no trusted expectations" in e for e in payload["errors"])
 
 
 def test_stale_same_phase_packet_rejected(runner, alpha, tmp_path):
@@ -232,9 +236,16 @@ def test_reused_nonce_across_phases_rejected_at_verify(runner, alpha):
 def test_missing_challenge_expectation_fails_closed(runner, alpha):
     n1 = _issue(runner, alpha, 1)
     assert _seal(runner, alpha, 1, n1).exit_code == 0
-    res, payload = _verify(runner, alpha, "--require-binding", "--expect-project", "alpha")
+    n2 = _issue(runner, alpha, 2)
+    assert _seal(runner, alpha, 2, n2).exit_code == 0
+    # No challenge at all: usage error, not a pass.
+    res = _cli(runner, alpha, "verify", "--require-binding", "--expect-project", "alpha")
+    assert res.exit_code == 2 and "at least one trusted challenge" in res.output
+    # Challenge for phase 1 only: sealed phase 2 cannot be vouched for.
+    res, payload = _verify(runner, alpha, "--require-binding", "--expect-project", "alpha",
+                           "--expect-challenge", f"1={n1}")
     assert res.exit_code == 1
-    assert any("no trusted challenge" in e for e in payload["errors"])
+    assert any("Phase 2: no trusted challenge" in e for e in payload["errors"])
 
 
 def test_missing_expected_project_is_usage_error(runner, alpha):
@@ -273,19 +284,96 @@ def test_wrong_slot_bound_packet_rejected(runner, alpha):
     assert "reuses the challenge of phase 1" in errs
 
 
-def test_legacy_optin_cannot_satisfy_strict(runner, alpha):
+def test_allow_unbound_refused_with_every_strict_flag(runner, alpha):
     assert _seal(runner, alpha, 1).exit_code == 0
-    res = _cli(runner, alpha, "verify", "--require-binding", "--allow-unbound",
-               "--expect-project", "alpha")
-    assert res.exit_code == 2 and "cannot be combined" in res.output
-    # Without --require-binding, the opt-in accepts the legacy packet with a warning.
-    res, payload = _verify(runner, alpha, "--expect-project", "alpha", "--allow-unbound")
-    assert res.exit_code == 0
-    assert payload["binding_required"] is False
-    assert any("legacy packet" in w for w in payload["warnings"])
-    # ...and without the opt-in, the same expectations reject it.
-    res, payload = _verify(runner, alpha, "--expect-project", "alpha")
+    for flags in (["--strict"], ["--require-signature"], ["--require-binding"],
+                  ["--expect-project", "alpha"], ["--expect-challenge", "1=" + "a" * 20]):
+        res = _cli(runner, alpha, "verify", "--allow-unbound", *flags)
+        assert res.exit_code == 2, (flags, res.output)
+        assert "cannot be combined" in res.output
+
+
+def test_allow_unbound_accepts_signed_legacy_as_untrusted(runner, alpha):
+    assert _seal(runner, alpha, 1).exit_code == 0  # unbound, signed
+    res, payload = _verify(runner, alpha)
+    assert res.exit_code == 1  # no opt-in: rejected
+    assert any("no replay binding" in e for e in payload["errors"])
+    res, payload = _verify(runner, alpha, "--allow-unbound")
+    assert res.exit_code == 0, res.output
+    assert payload["trusted"] is False and payload["binding_checked"] is False
+    assert any("UNTRUSTED" in w for w in payload["warnings"])
+
+
+def test_allow_unbound_rejects_stripped_binding(runner, alpha):
+    """B4: removing the binding and re-hashing breaks the signature; never accepted."""
+    n1 = _issue(runner, alpha, 1)
+    assert _seal(runner, alpha, 1, n1).exit_code == 0
+    path = _proof(alpha, 1)
+    stripped = ProofPacket.load(path).model_copy(update={"binding": None})
+    stripped = stripped.model_copy(update={"packet_sha256": stripped.compute_hash()})
+    assert stripped.verify_integrity() is True
+    path.write_text(json.dumps(stripped.model_dump(mode="json")))
+    for flags in ([], ["--allow-unbound"]):
+        res, payload = _verify(runner, alpha, *flags)
+        assert res.exit_code == 1, (flags, res.output)
+        assert any("signature does not verify" in e for e in payload["errors"])
+
+
+def test_expectations_alone_imply_signature(runner, alpha, beta):
+    """B3: a forged binding with a recomputed hash fails without --require-binding."""
+    na = _issue(runner, alpha, 1)
+    assert _seal(runner, alpha, 1, na).exit_code == 0
+    nb = _issue(runner, beta, 1)
+    forged = ProofPacket.load(_proof(alpha, 1)).model_copy(
+        update={"binding": ProofBinding(project_id="beta", challenge=nb)}
+    )
+    forged = forged.model_copy(update={"packet_sha256": forged.compute_hash()})
+    dest = beta / "proofs" / "phase1_proof.json"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps(forged.model_dump(mode="json")))
+    for flags in ([], ["--strict"]):
+        res, payload = _verify(runner, beta, *flags, "--expect-project", "beta",
+                               "--expect-challenge", f"1={nb}")
+        assert res.exit_code == 1, (flags, res.output)
+        assert any("signature does not verify" in e for e in payload["errors"])
+
+
+def test_unsigned_forged_binding_fails_even_without_key(runner, alpha, monkeypatch):
+    n1 = _issue(runner, alpha, 1)
+    assert _seal(runner, alpha, 1, n1).exit_code == 0
+    monkeypatch.delenv("RIGFORGE_SIGNING_KEY")
+    (alpha / DEFAULT_SIGNING_KEY_PATH).unlink()
+    res = _cli(runner, alpha, "verify", "--expect-project", "alpha",
+               "--expect-challenge", f"1={n1}")
+    assert res.exit_code == 2 and "no signing key" in res.output
+
+
+def test_empty_proofs_dir_fails_strict(runner, alpha):
+    n1 = _issue(runner, alpha, 1)
+    res, payload = _verify(runner, alpha, "--strict", "--expect-project", "alpha",
+                           "--expect-challenge", f"1={n1}")
     assert res.exit_code == 1
+    assert any("missing proof" in e for e in payload["errors"])
+
+
+def test_expectations_file_inside_project_refused(runner, alpha):
+    n1 = _issue(runner, alpha, 1)
+    assert _seal(runner, alpha, 1, n1).exit_code == 0
+    inside = alpha / "rigforge" / "expect.json"
+    inside.write_text(json.dumps({"project_id": "alpha", "challenges": {"1": n1}}))
+    res = _cli(runner, alpha, "verify", "--expectations", str(inside))
+    assert res.exit_code == 2 and "inside the project directory" in res.output
+
+
+def test_artifact_path_through_symlinked_dir(runner, alpha, tmp_path):
+    """S6: an absolute --artifact path through a symlink to the project seals fine."""
+    link = tmp_path / "alias"
+    link.symlink_to(alpha, target_is_directory=True)
+    n1 = _issue(runner, alpha, 1)
+    res = _cli(runner, alpha, "seal", "1", "--artifact", str(link / "docs" / "evidence.txt"),
+               "--challenge", n1)
+    assert res.exit_code == 0, res.output
+    assert ProofPacket.load(_proof(alpha, 1)).artifacts[0].path == "docs/evidence.txt"
 
 
 def test_pre_13_packet_hash_still_verifies(runner, alpha):
@@ -403,28 +491,68 @@ def test_webapp_cross_project_same_key_fails(alpha, beta):
 def test_webapp_without_trusted_project_fails_closed(alpha):
     c = _client(alpha, None)
     assert c.post("/api/phases/1/challenge").status_code == 409
+    assert c.post("/api/phases/1/seal", json={"challenge": "x" * 32}).status_code == 409
     assert c.post("/api/phases/1/seal").status_code == 200  # unbound seal still allowed
-    v = c.get("/api/verify", params={"require_binding": True}).json()
+    v = c.get("/api/verify").json()  # the SPA's plain call
     assert v["ok"] is False
-    assert any("--expect-project" in e for e in v["errors"])
-    # Default verify keeps the old behaviour.
+    assert any("trusted project id" in e for e in v["errors"])
+    v = c.get("/api/verify", params={"require_binding": False}).json()
+    assert v["ok"] is False  # non-strict still refuses unbound / unexpected packets
+
+
+def test_webapp_spa_exact_calls_bind_and_reject_replays(alpha, beta, tmp_path):
+    """B2: drive the SPA's own requests (app.js sealPhase + boot) with no extra params."""
+    ca = _client(alpha, "alpha")
+    assert ca.post("/api/phases/1/seal", json={"evidence": "ui"}).json()["bound"] is True
+    v = ca.get("/api/verify").json()
+    assert v["ok"] is True and v["binding_required"] is True, v
+    old = tmp_path / "ui-run1.json"
+    shutil.copy(_proof(alpha, 1), old)
+    assert ca.post("/api/phases/1/seal", json={"evidence": "ui run 2"}).status_code == 200
+    shutil.copy(old, _proof(alpha, 1))
+    v = ca.get("/api/verify").json()
+    assert v["ok"] is False and any("stale or replayed" in e for e in v["errors"])
+    # Cross-project with the same key, through the SPA's calls only.
+    cb = _client(beta, "beta")
+    assert cb.post("/api/phases/1/seal", json={"evidence": "ui"}).status_code == 200
+    shutil.copy(old, _proof(beta, 1))
+    v = cb.get("/api/verify").json()
+    assert v["ok"] is False and any("cross-project replay" in e for e in v["errors"])
+    # strict=true with require_binding=false is refused.
+    assert cb.get("/api/verify", params={"strict": True,
+                                         "require_binding": False}).status_code == 400
+
+
+def test_webapp_seals_trusted_project_not_rigforge_yaml(alpha):
+    """S3: an agent rewriting rigforge.yaml does not change the sealed project id."""
+    c = _client(alpha, "alpha")
+    cfg = alpha / "rigforge.yaml"
+    cfg.write_text(cfg.read_text().replace("project: alpha", "project: gamma"))
+    assert c.post("/api/phases/1/seal", json={}).status_code == 200
+    assert ProofPacket.load(_proof(alpha, 1)).binding.project_id == "alpha"
     assert c.get("/api/verify").json()["ok"] is True
 
 
 # ── MCP path ────────────────────────────────────────────────────────────
 
 
-def test_mcp_seal_and_verify_binds_server_project(alpha, monkeypatch):
+def test_mcp_seal_and_verify_trusts_only_operator_env(alpha, monkeypatch):
     from rigforge.mcp_server import seal_and_verify
 
     monkeypatch.chdir(alpha)
+    monkeypatch.delenv("RIGFORGE_PROJECT_ID", raising=False)
+    # rigforge.yaml says alpha, but it is agent-writable: not trusted.
     out = seal_and_verify("agent-x", "Bootstrap & Doctrine",
                           artifacts=["docs/evidence.txt"], phase=1)
-    assert out["accepted"] is True and out["binding_ok"] is True
-    assert out["binding"]["project_id"] == "alpha"
+    assert out["accepted"] is True and out["bound"] is False
+    assert "RIGFORGE_PROJECT_ID" in out["binding"]["error"]
+    assert "binding_ok" not in out  # no self-check pretending to be a replay check
+    monkeypatch.setenv("RIGFORGE_PROJECT_ID", "alpha-operator")
+    out = seal_and_verify("agent-x", "Bootstrap & Doctrine", phase=1)
+    assert out["bound"] is True and out["binding"]["project_id"] == "alpha-operator"
     monkeypatch.setenv("RIGFORGE_PROJECT_ID", "rigforge-project")
     out = seal_and_verify("agent-x", "Bootstrap & Doctrine", phase=1)
-    assert out["binding_ok"] is None and "placeholder" in out["binding"]["error"]
+    assert out["bound"] is False and "placeholder" in out["binding"]["error"]
 
 
 def test_mcp_legacy_proof_seal_fails_require_binding(runner, alpha, monkeypatch):

@@ -10,8 +10,8 @@ Top-level commands::
     rigforge run PHASE [--dry-run] [--json]
     rigforge challenge issue PHASE      # per-run nonce for a bound seal
     rigforge seal PHASE [--artifact PATH ...] [--evidence TEXT] [--challenge NONCE]
-    rigforge verify [--strict] [--require-signature] [--json]
-    rigforge verify --require-binding --expect-project ID --expect-challenge N=NONCE
+    rigforge verify [--json]            # non-strict summary (no replay check)
+    rigforge verify --strict --expect-project ID --expect-challenge N=NONCE
     rigforge benchmark [--seed N]              # OFFLINE honesty gate (real numbers)
     rigforge diff PROOF_A.json PROOF_B.json   # MODEL-DIFF two ProofPackets
     rigforge contract list|validate|create|inspect
@@ -463,31 +463,41 @@ def seal(click_ctx: click.Context, phase: int, artifacts: tuple[Path, ...],
 
 @main.command()
 @click.option("--strict", is_flag=True, default=False,
-              help="Require integrity hash + phase-order continuity (no gaps).")
+              help="Strict verify: integrity, phase-order continuity, valid signature AND replay "
+                   "binding against caller expectations (needs --expect-project and at least "
+                   "one --expect-challenge).")
 @click.option("--require-signature", is_flag=True, default=False,
-              help="Also verify the HMAC signature on each proof packet (G006).")
+              help="Verify HMAC signatures (G006). Also a strict flag: requires the replay "
+                   "binding and caller expectations, like --require-binding.")
 @click.option("--require-binding", is_flag=True, default=False,
               help="Fail unless every sealed phase is signed AND carries a replay binding "
-                   "matching --expect-project and its --expect-challenge (implies "
-                   "--require-signature).")
+                   "matching --expect-project and its --expect-challenge.")
 @click.option("--expect-project", default=None,
               help="Trusted project id the packets must be bound to (supplied by the caller, "
-                   "never read from the packets).")
+                   "never read from the packets). Implies strict binding.")
 @click.option("--expect-challenge", "expect_challenge", multiple=True, metavar="N=NONCE",
-              help="Trusted challenge issued for phase N in this run (repeatable).")
+              help="Trusted challenge issued for phase N in this run (repeatable). "
+                   "Implies strict binding.")
 @click.option("--expectations", "expectations_file", default=None,
               type=click.Path(exists=True, dir_okay=False, path_type=Path),
               help='Caller-owned JSON {"project_id": ..., "challenges": {"N": ...}}. '
-                   "Keep it outside the project directory the agent can write.")
+                   "Must live outside the project directory. Implies strict binding.")
 @click.option("--allow-unbound", is_flag=True, default=False,
-              help="Legacy opt-in: accept packets sealed without a binding (pre-1.3.0) with a "
-                   "warning. Refused together with --require-binding.")
+              help="Legacy opt-in (non-strict): accept packets sealed without a binding "
+                   "(pre-1.3.0) if their signature verifies. Refused together with any strict "
+                   "flag (--strict, --require-signature, --require-binding, --expect-*).")
 @click.pass_context
 def verify(click_ctx: click.Context, strict: bool, require_signature: bool,
            require_binding: bool, expect_project: str | None,
            expect_challenge: tuple[str, ...], expectations_file: Path | None,
            allow_unbound: bool):
-    """Verify all sealed phases: schema, integrity hash, phase order, signature, binding."""
+    """Verify all sealed phases: schema, integrity hash, phase order, signature, binding.
+
+    Without flags this is a non-strict summary that does not check replay
+    binding. Every strict flag requires the replay binding and caller-held
+    expectations; the only way to accept legacy unbound packets is the
+    non-strict --allow-unbound opt-in.
+    """
     ctx = _ctx(click_ctx)
     from rigforge.binding import (
         BindingError,
@@ -498,11 +508,30 @@ def verify(click_ctx: click.Context, strict: bool, require_signature: bool,
     )
     from rigforge.config import load_config
 
+    strict_flags = [name for name, on in (
+        ("--strict", strict),
+        ("--require-signature", require_signature),
+        ("--require-binding", require_binding),
+        ("--expect-project", expect_project is not None),
+        ("--expect-challenge", bool(expect_challenge)),
+        ("--expectations", expectations_file is not None),
+    ) if on]
     try:
+        if allow_unbound and strict_flags:
+            raise BindingError(
+                f"--allow-unbound is a non-strict legacy opt-in and cannot be combined with "
+                f"{', '.join(strict_flags)}."
+            )
         challenges: dict[int, str] = {}
         file_project: str | None = None
         if expectations_file is not None:
-            file_project, challenges = load_expectations_file(expectations_file)
+            exp_path = expectations_file.resolve()
+            if exp_path.is_relative_to(ctx.root.resolve()):
+                raise BindingError(
+                    "--expectations file is inside the project directory, which the agent "
+                    "under verification can write; keep it outside the project."
+                )
+            file_project, challenges = load_expectations_file(exp_path)
         for ph, val in parse_expect_challenge(expect_challenge).items():
             if ph in challenges and challenges[ph] != val:
                 raise BindingError(f"phase {ph} has different challenges in flags and file")
@@ -513,14 +542,16 @@ def verify(click_ctx: click.Context, strict: bool, require_signature: bool,
         expectations = ReplayExpectations(
             project_id=expect_project if expect_project is not None else file_project,
             challenges=challenges,
-            require=require_binding,
+            require=bool(strict_flags),
             allow_unbound=allow_unbound,
         )
         expectations.validate()
     except (BindingError, ValueError) as exc:
         click.echo(f"❌ {exc}")
         sys.exit(2)
-    if require_binding:
+    if strict_flags or allow_unbound:
+        # A binding is only meaningful when signed, and the legacy opt-in must
+        # not accept a bound packet whose binding was stripped (bad signature).
         require_signature = True
 
     try:
@@ -529,7 +560,7 @@ def verify(click_ctx: click.Context, strict: bool, require_signature: bool,
         cfg = None
     signing_key = cfg.resolve_signing_key(ctx.root) if cfg is not None else None
     if require_signature and signing_key is None:
-        click.echo("❌ --require-signature was set but no signing key is configured "
+        click.echo("❌ signature verification is required but no signing key is configured "
                    "(set RIGFORGE_SIGNING_KEY or configure signing.key_file in rigforge.yaml).")
         sys.exit(2)
 

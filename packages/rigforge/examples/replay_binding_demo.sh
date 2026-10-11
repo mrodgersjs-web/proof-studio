@@ -11,6 +11,7 @@
 set -uo pipefail
 
 RIGFORGE="${RIGFORGE:-rigforge}"
+PYTHON="${PYTHON:-python}"
 WORK="$(cd "$(mktemp -d)" && pwd -P)"  # resolve /var -> /private/var on macOS
 trap 'rm -rf "$WORK"' EXIT
 export RIGFORGE_SIGNING_KEY="demo-shared-key-$(date +%s)-$RANDOM"
@@ -26,7 +27,7 @@ expect() {  # expect <wanted-exit> <label> -- cmd...
     echo "FAIL  [$rc, wanted $want] $label"; echo "$out" | sed 's/^/      /'
     FAILS=$((FAILS + 1))
   fi
-  printf '%s\n' "$out" | grep -E "cross-project|stale|reused|no replay binding|cannot be combined|no trusted" | head -1 | sed -E 's/^ *(- |❌ )?/      reason: /'
+  printf '%s\n' "$out" | grep -E "cross-project|stale|reused|no replay binding|cannot be combined|no trusted|trusted project|trusted challenge|signature does not|UNTRUSTED" | head -1 | sed -E 's/^ *(- |❌ )?/      reason: /'
 }
 
 mkproject() {
@@ -58,6 +59,11 @@ cp "$P1" "$WORK/alpha-run2-phase1.json"
 cp "$WORK/alpha-run1-phase1.json" "$P1"
 expect 1 "stale same-phase replay (run-1 packet, run-2 challenge)" -- \
   "$RIGFORGE" --cwd "$A" verify --strict --require-binding --expect-project alpha --expect-challenge "1=$N2"
+# The pre-1.3 strict command and plain verify must not pass the stale packet.
+expect 2 "stale packet, old strict flags (--strict --require-signature, no expectations)" -- \
+  "$RIGFORGE" --cwd "$A" verify --strict --require-signature
+expect 1 "stale packet, plain verify (no trusted expectations)" -- \
+  "$RIGFORGE" --cwd "$A" verify
 cp "$WORK/alpha-run2-phase1.json" "$P1"
 
 # Reused challenge: sealing again with the consumed run-2 challenge is refused.
@@ -86,8 +92,34 @@ expect 1 "unbound packet (no challenge) under --require-binding" -- \
   "$RIGFORGE" --cwd "$B" verify --require-binding --expect-project beta --expect-challenge "1=$NB" --expect-challenge "2=${NB}x"
 expect 2 "--allow-unbound with --require-binding is refused" -- \
   "$RIGFORGE" --cwd "$B" verify --require-binding --allow-unbound --expect-project beta
-expect 1 "missing expected project/challenge: no self-asserted fallback" -- \
+expect 2 "--allow-unbound with --strict is refused" -- \
+  "$RIGFORGE" --cwd "$B" verify --strict --allow-unbound
+expect 0 "--allow-unbound alone: legacy packet accepted as UNTRUSTED" -- \
+  "$RIGFORGE" --cwd "$B" verify --allow-unbound
+expect 2 "missing expected challenge: no self-asserted fallback" -- \
   "$RIGFORGE" --cwd "$B" verify --require-binding --expect-project beta
+
+# Forgeries without the key: strip the binding / rewrite it, recompute the plain hash.
+forge() {  # forge <proof> strip|rewrite <challenge>
+  "$PYTHON" - "$@" <<'PY'
+import json, sys
+from rigforge.proof import ProofBinding, ProofPacket
+path, mode, ch = sys.argv[1:4]
+p = ProofPacket.load(path)
+b = None if mode == "strip" else ProofBinding(project_id="beta", challenge=ch)
+p = p.model_copy(update={"binding": b})
+p = p.model_copy(update={"packet_sha256": p.compute_hash()})
+open(path, "w").write(json.dumps(p.model_dump(mode="json")))
+PY
+}
+cp "$PB" "$WORK/beta-good.json"
+forge "$PB" strip "$NB"
+expect 1 "stripped binding + recomputed hash under --allow-unbound (bad signature)" -- \
+  "$RIGFORGE" --cwd "$B" verify --allow-unbound
+cp "$P1" "$PB"; forge "$PB" rewrite "$NB"
+expect 1 "alpha packet re-labelled beta, hash recomputed, expectations only (no --require-binding)" -- \
+  "$RIGFORGE" --cwd "$B" verify --expect-project beta --expect-challenge "1=$NB"
+cp "$WORK/beta-good.json" "$PB"
 
 echo
 if [ "$FAILS" -eq 0 ]; then

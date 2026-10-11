@@ -27,11 +27,12 @@ def ctx(tmp_path: Path) -> ProjectContext:
     return ProjectContext.discover(tmp_path)
 
 
-def _client(ctx, token=None, allow_insecure=True):
+def _client(ctx, token=None, allow_insecure=True, expected_project=None):
     from fastapi.testclient import TestClient
     from rigforge.webapp import build_app
 
-    return TestClient(build_app(ctx, auth_token=token, allow_insecure=allow_insecure))
+    return TestClient(build_app(ctx, auth_token=token, allow_insecure=allow_insecure,
+                                expected_project=expected_project))
 
 
 # ── Page + static assets ─────────────────────────────────────────────────
@@ -93,8 +94,9 @@ class TestRestApi:
     def test_run_phase_out_of_range(self, ctx):
         assert _client(ctx).post("/api/phases/99/run", json={}).status_code == 404
 
-    def test_seal_then_proof_and_verify(self, ctx):
-        client = _client(ctx)
+    def test_seal_then_proof_and_verify(self, ctx, monkeypatch):
+        monkeypatch.setenv("RIGFORGE_SIGNING_KEY", "webapp-test-key")
+        client = _client(ctx, expected_project="demo-proj")
         seal = client.post("/api/phases/1/seal", json={"evidence": "test seal"})
         assert seal.status_code == 200, seal.text
         body = seal.json()
@@ -109,7 +111,8 @@ class TestRestApi:
         assert pj["verifier"] == "cockpit"
 
         verify = client.get("/api/verify").json()
-        assert verify["ok"] is True
+        assert verify["ok"] is True, verify
+        assert verify["binding_required"] is True
         sealed = next(p for p in verify["phases"] if p["phase"] == 1)
         assert sealed["sealed"] is True
         assert sealed["integrity_ok"] is True
@@ -129,7 +132,8 @@ class TestRestApi:
     def test_verify_strict_flag(self, ctx):
         _client(ctx).post("/api/phases/1/seal", json={})
         body = _client(ctx).get("/api/verify?strict=true").json()
-        assert "ok" in body
+        # No trusted project configured: strict verify fails closed.
+        assert body["ok"] is False
         assert body["strict"] is True
 
 

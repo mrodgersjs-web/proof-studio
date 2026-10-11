@@ -35,9 +35,9 @@ Not benchmark scenarios, but covered by `rigforge/tests/test_replay_binding.py` 
 runnable `examples/replay_binding_demo.sh` (schema 1.3.0 replay binding):
 
 - **Cross-project replay (shared key)** — a valid packet copied from another project → rejected by
-  `verify --require-binding --expect-project <id>`: the signed `binding.project_id` does not match
+  `verify --strict --expect-project <id>`: the signed `binding.project_id` does not match
 - **Stale same-phase replay** — an older valid packet from an earlier run → rejected by
-  `verify --require-binding --expect-challenge N=<nonce>`: the signed `binding.challenge` is not the
+  `verify --strict --expect-challenge N=<nonce>`: the signed `binding.challenge` is not the
   challenge the caller issued for this run
 - **Reused or un-issued challenge** — `seal --challenge` refuses a challenge that was never issued, was
   issued for another phase or project, or was already used; `verify` rejects two packets with the
@@ -60,10 +60,11 @@ the key, so these forgeries **must** fail. That's the point — and you can re-r
   *integrity and provenance*, not *correctness or safety* of the code itself.
 - **Weak gates.** A proof is only as meaningful as the gates it seals. Sealing a phase
   whose only gate is `echo ok` proves very little. Garbage gates in, garbage proof out.
-- **Replay when the binding is not required.** Cross-project replay with a shared key and stale
-  same-phase replay are rejected only by `verify --require-binding` with caller-held expectations
-  (see the list above). Plain `verify` and `--strict --require-signature` do not check the
-  binding, and `--allow-unbound` accepts legacy packets that carry none.
+- **Untrusted legacy acceptance.** `verify --allow-unbound` (non-strict, refused with every strict
+  flag) accepts packets without a binding, and bound packets without caller expectations, as long as
+  their signatures verify. It reports `trusted: false`: replay is not ruled out.
+- **The challenge store is not a verifier guarantee.** `.rigforge/challenges.json` stops accidental
+  challenge reuse at seal time, but the agent can edit it. Only caller-held expectations count.
 - **Forgery by a key holder.** The binding is signed with the same project HMAC key. Anyone who holds
   that key can seal any project id and challenge. The binding stops replay of genuine packets; it does
   not identify who sealed them.

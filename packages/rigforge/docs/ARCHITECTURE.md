@@ -457,10 +457,11 @@ cli.seal ─► harness.run(5) again ─► refuse if blockers and not --force
    │           ▼
    │        proofs/phase5_proof.json  (sha256 + optional HMAC signature)
    ▼
-rigforge verify [--strict] [--require-signature]
-   │  loads every phaseN_proof.json
-   │  verify_integrity() per packet; strict → phase-order continuity
-   │  --require-signature → verify_signature() with the resolved key
+rigforge verify --strict --expect-project ID --expect-challenge N=NONCE
+   │  loads every phaseN_proof.json (rigforge.binding.verify_proofs)
+   │  verify_integrity() + verify_signature(); an invalid signature always fails
+   │  binding.project_id / binding.challenge vs. caller-held expectations
+   │  strict → phase-order continuity; --allow-unbound = non-strict, untrusted
    ▼
 exit 0 = all phases provably sealed and intact
 ```

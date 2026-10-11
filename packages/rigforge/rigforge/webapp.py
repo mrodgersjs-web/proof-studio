@@ -95,8 +95,11 @@ def build_app(ctx: ProjectContext, *, auth_token: str | None = None,
 
     ``expected_project`` is the trusted project id for replay binding (from
     ``rigforge serve --expect-project``). Challenges issued through
-    ``POST /api/phases/{n}/challenge`` live only in this process's memory; the
-    newest one per phase is what ``/api/verify?require_binding=true`` expects.
+    ``POST /api/phases/{n}/challenge`` (or auto-issued by a plain seal) live only
+    in this process's memory; the newest one per phase is what verify expects.
+    With ``expected_project`` set, every seal is bound and ``/api/verify``
+    defaults to ``require_binding=true``. Packets sealed before this server
+    process started have no expectation here and fail strict verify.
     """
     try:
         from fastapi import FastAPI, HTTPException
@@ -223,7 +226,7 @@ def build_app(ctx: ProjectContext, *, auth_token: str | None = None,
     def api_seal(n: int, body: dict | None = None) -> dict[str, Any]:
         import hmac as _hmac
 
-        from rigforge.binding import BindingError, validate_project_id
+        from rigforge.binding import new_challenge
         from rigforge.proof import ProofBinding
 
         if not 1 <= n <= 7:
@@ -234,7 +237,19 @@ def build_app(ctx: ProjectContext, *, auth_token: str | None = None,
         challenge = body.get("challenge")
         harness = ArchonHarness(ctx)
         binding = None
-        if challenge is not None:
+        trusted_project = app.state.expected_project
+        if challenge is not None and trusted_project is None:
+            raise HTTPException(
+                status_code=409,
+                detail="server has no trusted project id; start it with --expect-project",
+            )
+        if trusted_project is not None:
+            if challenge is None:
+                # The SPA's plain seal call: the server issues and immediately
+                # uses its own challenge, so every seal through a server with a
+                # trusted project is bound.
+                challenge = new_challenge()
+                app.state.challenges[n] = {"challenge": challenge, "status": "open"}
             issued = app.state.challenges.get(n)
             if issued is None or not _hmac.compare_digest(
                 str(issued["challenge"]).encode(), str(challenge).encode()
@@ -248,11 +263,9 @@ def build_app(ctx: ProjectContext, *, auth_token: str | None = None,
                     and harness.config.resolve_signing_key(ctx.root)):
                 raise HTTPException(status_code=409,
                                     detail="a bound seal needs a signing key")
-            try:
-                project_id = validate_project_id(harness.config.project)
-            except BindingError as exc:
-                raise HTTPException(status_code=409, detail=str(exc)) from exc
-            binding = ProofBinding(project_id=project_id, challenge=str(challenge))
+            # Seal the id the server was started with, not rigforge.yaml
+            # (which the agent under verification can edit).
+            binding = ProofBinding(project_id=trusted_project, challenge=str(challenge))
         run_result = harness.run(n, verifier="cockpit")
         if run_result.blockers and not force:
             raise HTTPException(
@@ -279,7 +292,17 @@ def build_app(ctx: ProjectContext, *, auth_token: str | None = None,
         }
 
     @app.get("/api/verify")
-    def api_verify(strict: bool = False, require_binding: bool = False) -> dict[str, Any]:
+    def api_verify(strict: bool = False,
+                   require_binding: bool | None = None) -> dict[str, Any]:
+        # The API verifies strictly by default (the SPA's plain call): replay
+        # binding against the server's trusted project and its own challenges.
+        # With no --expect-project this fails closed. require_binding=false is
+        # an explicit non-strict summary that still rejects unbound packets.
+        if require_binding is None:
+            require_binding = True
+        if strict and not require_binding:
+            raise HTTPException(status_code=400,
+                                detail="strict verify always checks replay binding")
         return _verify_payload(
             ctx,
             strict=strict,

@@ -82,7 +82,13 @@ class ArtifactRecord(BaseModel):
         cls, path: Path, base: Path | None = None, *, kind: StepKind = "deterministic"
     ) -> "ArtifactRecord":
         """Build a record by hashing the file on disk."""
-        rel = str(path.relative_to(base)) if base is not None and path.is_absolute() else str(path)
+        # Resolve both sides so a symlinked prefix (macOS /var -> /private/var)
+        # does not break relative_to.
+        rel = (
+            str(path.resolve().relative_to(Path(base).resolve()))
+            if base is not None and path.is_absolute()
+            else str(path)
+        )
         if not path.exists():
             return cls(path=rel, sha256="", size_bytes=0, exists=False, kind=kind)
         h = hashlib.sha256()

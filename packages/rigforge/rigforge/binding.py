@@ -176,15 +176,21 @@ class ReplayExpectations:
 
     @property
     def active(self) -> bool:
-        return self.require or self.project_id is not None or bool(self.challenges)
+        return (self.require or self.allow_unbound or self.project_id is not None
+                or bool(self.challenges))
 
     def validate(self) -> None:
         if self.require and self.allow_unbound:
-            raise BindingError("--allow-unbound cannot be combined with --require-binding.")
+            raise BindingError("--allow-unbound cannot be combined with strict verification.")
         if self.require and self.project_id is None:
             raise BindingError(
-                "--require-binding needs a trusted project id: pass --expect-project "
+                "strict verification needs a trusted project id: pass --expect-project "
                 "or an --expectations file with project_id."
+            )
+        if self.require and not self.challenges:
+            raise BindingError(
+                "strict verification needs at least one trusted challenge: pass "
+                "--expect-challenge N=<nonce> for each phase sealed in this run."
             )
         if self.project_id is not None:
             self.project_id = validate_project_id(self.project_id)
@@ -243,8 +249,8 @@ def check_binding(
         if not exp.allow_unbound:
             errors.append(
                 f"Phase {phase}: packet has no replay binding (no project id or challenge "
-                f"signed in); re-seal with `rigforge seal {phase} --challenge <nonce>` "
-                "or pass --allow-unbound to accept legacy packets."
+                f"signed in); re-seal with `rigforge seal {phase} --challenge <nonce>`, "
+                "or accept it as untrusted legacy with non-strict `verify --allow-unbound`."
             )
         return errors, report
 
@@ -330,35 +336,39 @@ def verify_proofs(
             "signed": bool(packet.signature),
             "signature_ok": signature_ok,
         }
-        if (strict or exp.require) and not integrity and packet.schema_version != "0.0.0":
+        # A signature covers packet_sha256, so it proves nothing about the body
+        # unless the hash is also re-checked: integrity is part of every
+        # signature-requiring mode.
+        if (strict or exp.require or require_signature) and not integrity \
+                and packet.schema_version != "0.0.0":
             errors.append(f"Phase {p}: integrity hash mismatch.")
         if packet.schema_version != "0.0.0" and not packet.matches_claim(p, name):
             errors.append(
                 f"Phase {p}: packet was sealed for phase {packet.phase} "
                 f"{packet.name!r}, not phase {p} {name!r} (replayed proof)."
             )
-        if require_signature:
-            if not packet.signature:
-                errors.append(f"Phase {p}: proof packet is not signed.")
-            elif signature_ok is False:
-                errors.append(f"Phase {p}: signature does not verify.")
-        if exp.active:
-            b_errors, b_report = check_binding(packet, p, exp)
-            errors.extend(b_errors)
-            report["binding"] = b_report
-            if b_report.get("legacy_unbound") and exp.allow_unbound:
-                warnings.append(f"Phase {p}: legacy packet without replay binding accepted "
-                                "(--allow-unbound).")
-            if packet.binding is not None:
-                prior = seen_challenges.get(packet.binding.challenge)
-                if prior is not None:
-                    errors.append(
-                        f"Phase {p}: packet reuses the challenge of phase {prior} (reused nonce)."
-                    )
-                seen_challenges[packet.binding.challenge] = p
+        if signature_ok is False:
+            # An invalid signature is never acceptable, in any mode.
+            errors.append(f"Phase {p}: signature does not verify.")
+        elif require_signature and not packet.signature:
+            errors.append(f"Phase {p}: proof packet is not signed.")
+        # Binding is checked in every mode; only the expectations vary.
+        b_errors, b_report = check_binding(packet, p, exp)
+        errors.extend(b_errors)
+        report["binding"] = b_report
+        if b_report.get("legacy_unbound") and exp.allow_unbound:
+            warnings.append(f"Phase {p}: UNTRUSTED legacy packet without replay binding "
+                            "accepted (--allow-unbound); replay is not ruled out.")
+        if packet.binding is not None:
+            prior = seen_challenges.get(packet.binding.challenge)
+            if prior is not None:
+                errors.append(
+                    f"Phase {p}: packet reuses the challenge of phase {prior} (reused nonce)."
+                )
+            seen_challenges[packet.binding.challenge] = p
         phase_reports.append(report)
 
-    if exp.active:
+    if exp.challenges:
         for p in sorted(set(exp.challenges) - set(sealed_phases)):
             errors.append(
                 f"Phase {p}: a challenge was issued for this run but no packet is sealed "
@@ -369,13 +379,24 @@ def verify_proofs(
         gaps = sorted(set(expected) - set(sealed_phases))
         if gaps:
             errors.append(f"phase-order gaps (strict): missing {gaps}")
-    if not exp.active and sealed_phases:
-        warnings.append("replay binding not checked (no --require-binding / expectations).")
+    if not exp.require and sealed_phases:
+        if exp.allow_unbound:
+            warnings.append(
+                "UNTRUSTED (--allow-unbound): integrity and signatures checked, but replay "
+                "is not ruled out; no caller expectations were supplied."
+            )
+        else:
+            errors.append(
+                "no trusted expectations: stale or cross-project replay cannot be ruled out. "
+                "Pass --expect-project ID --expect-challenge N=NONCE (strict), or "
+                "--allow-unbound to accept the packets as untrusted."
+            )
 
     return {
         "ok": not errors,
         "strict": strict,
-        "binding_checked": exp.active,
+        "binding_checked": exp.require,
+        "trusted": exp.require and not errors,
         "binding_required": exp.require,
         "phases": phase_reports,
         "errors": errors,

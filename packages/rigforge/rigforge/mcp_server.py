@@ -161,25 +161,17 @@ def seal_and_verify(
     and the verdict is REJECTED unless every criterion has a passing gate — so
     an agent that skips a requirement is caught even when the artifact is intact.
 
-    Replay binding: the server issues a fresh challenge for this call and seals
-    it with the project id into the signed packet, then checks the packet's
-    binding against the values the server holds (never the packet's own
-    copy). The project id comes from ``RIGFORGE_PROJECT_ID`` in the server's
-    environment or, failing that, ``project`` in the server's rigforge.yaml;
-    neither is a tool argument, so the calling agent cannot choose it. When
-    the server has only a placeholder project name, the packet is sealed
-    without a binding and ``binding_ok`` is ``None`` (the fresh verdict still
-    stands; a later ``verify --require-binding`` on such a packet fails).
+    Replay binding: when the operator set ``RIGFORGE_PROJECT_ID`` in the
+    server's environment, the server seals that id and a fresh server-issued
+    challenge into the signed packet and returns both (``binding``) so a later
+    strict ``rigforge verify`` can expect them. Neither is a tool argument and
+    the agent-writable rigforge.yaml is never consulted. Without the env var
+    the packet is sealed unbound (``bound: false``). The verdict here is a
+    fresh seal-and-check, NOT a replay check.
     """
     import os
 
-    from rigforge.binding import (
-        BindingError,
-        ReplayExpectations,
-        check_binding,
-        new_challenge,
-        validate_project_id,
-    )
+    from rigforge.binding import BindingError, new_challenge, validate_project_id
     from rigforge.ledger import ExecutionLedger
     from rigforge.proof import ArtifactRecord, GateOutcome, ProofBinding, ProofPacket
 
@@ -202,21 +194,16 @@ def seal_and_verify(
 
     replay_binding: ProofBinding | None = None
     binding_error: str | None = None
+    # Trusted project id: ONLY the operator-set server environment. The
+    # project's rigforge.yaml is writable by the calling agent, so it is not
+    # a fallback; without RIGFORGE_PROJECT_ID the packet is sealed unbound.
     trusted_project = os.environ.get("RIGFORGE_PROJECT_ID")
-    if not trusted_project:
-        from rigforge.config import load_config
-        from rigforge.context import ProjectContext
-
-        try:
-            trusted_project = load_config(ProjectContext.discover(root)).project
-        except Exception:  # noqa: BLE001
-            trusted_project = None
     try:
         trusted_project = validate_project_id(trusted_project)
-        server_challenge = new_challenge()
-        replay_binding = ProofBinding(project_id=trusted_project, challenge=server_challenge)
+        replay_binding = ProofBinding(project_id=trusted_project, challenge=new_challenge())
     except BindingError as exc:
-        binding_error = str(exc)
+        binding_error = (f"{exc} (set RIGFORGE_PROJECT_ID in the MCP server's environment; "
+                         "sealed without a replay binding)")
 
     packet = ProofPacket(
         phase=phase,
@@ -231,15 +218,6 @@ def seal_and_verify(
 
     integrity_ok = packet.verify_integrity()
     signature_ok = packet.verify_signature(key)
-    binding_ok: bool | None = None
-    if replay_binding is not None:
-        b_errors, _ = check_binding(packet, phase, ReplayExpectations(
-            project_id=trusted_project,
-            challenges={phase: server_challenge},
-            require=True,
-        ))
-        binding_ok = not b_errors
-
     spec_result: dict[str, Any] | None = None
     if spec_binding is not None:
         from rigforge.spec import verify_spec
@@ -248,7 +226,7 @@ def seal_and_verify(
         spec_result = {"ok": sm.ok, "missing": sm.missing}
 
     accepted = bool(
-        integrity_ok and signature_ok and binding_ok is not False
+        integrity_ok and signature_ok
         and (spec_result["ok"] if spec_result else True)
     )
 
@@ -267,7 +245,9 @@ def seal_and_verify(
         "integrity_ok": integrity_ok,
         "signature_ok": signature_ok,
         "spec": spec_result,
-        "binding_ok": binding_ok,
+        # Not a replay check: this call sealed the packet moments ago. The
+        # values let a later strict `rigforge verify` expect them.
+        "bound": replay_binding is not None,
         "binding": (
             {"project_id": replay_binding.project_id, "challenge": replay_binding.challenge}
             if replay_binding is not None else {"error": binding_error}
