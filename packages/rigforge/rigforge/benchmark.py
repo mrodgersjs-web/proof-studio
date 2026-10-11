@@ -127,6 +127,7 @@ ScenarioKind = Literal[
     "swapped_artifact",      # lie: different file, hash re-forged → signature FAIL
     "unsigned_tamper",       # lie: tampered, re-hashed, NO signature → require-signature blocks
     "dropped_gate",          # lie: a failed gate flipped to passed, hash re-forged → signature FAIL
+    "replay",                # lie: valid signed packet re-submitted for a newer claim → claim binding FAIL
 ]
 
 
@@ -145,6 +146,9 @@ class Scenario:
     packet: ProofPacket
     # The signing key the honest platform holds (None for unsigned_tamper).
     signing_key: bytes | None
+    # The phase the agent claims this packet proves. None = the packet's own
+    # phase (an honest claim). A replay claims a phase the packet was not sealed for.
+    claimed_phase: int | None = None
 
     @property
     def label(self) -> str:
@@ -169,6 +173,8 @@ class ScenarioResult:
     correct: bool
     # Telemetry — NON-deterministic, excluded from the equality contract.
     elapsed_ms: float
+    # Did the packet's signed phase match the claim being verified?
+    claim_ok: bool = True
 
 
 @dataclass(frozen=True)
@@ -220,6 +226,7 @@ class BenchmarkResult:
                     "agent_action": s.agent_action,
                     "integrity_ok": s.integrity_ok,
                     "signature_ok": s.signature_ok,
+                    "claim_ok": s.claim_ok,
                     "accepted": s.accepted,
                     "correct": s.correct,
                     "elapsed_ms": s.elapsed_ms,
@@ -398,6 +405,28 @@ def _build_dropped_gate(rng: _RNG, sid: str, phase: int, base: Path) -> Scenario
     )
 
 
+def _build_replay(rng: _RNG, sid: str, phase: int, base: Path) -> Scenario:
+    size = 256 + rng.uint(2048)
+    artifact = base / f"{sid}.bin"
+    artifact.write_bytes(_artifact_bytes(rng, sid, size))
+    key = secrets.token_bytes(32)
+    # A genuine, correctly signed packet for ``phase``. Untouched: integrity and
+    # signature both verify. The lie is re-submitting it as proof of a newer phase.
+    sealed = _base_packet(phase, sid, artifact, base).sealed(signing_key=key)
+    newer = phase + 1 if phase < 7 else phase - 1
+    return Scenario(
+        sid=sid,
+        phase=phase,
+        kind="replay",
+        is_honest=False,
+        artifact_size=size,
+        agent_action=f"re-submitted a valid phase-{phase} packet as proof for phase {newer}",
+        packet=sealed,
+        signing_key=key,
+        claimed_phase=newer,
+    )
+
+
 # Ordered, fixed scenario plan. The mix is deliberately balanced so every
 # attack class is represented and the honest/forged split is non-trivial.
 _BUILDER_FOR: dict[ScenarioKind, Callable[[_RNG, str, int, Path], Scenario]] = {
@@ -407,9 +436,10 @@ _BUILDER_FOR: dict[ScenarioKind, Callable[[_RNG, str, int, Path], Scenario]] = {
     "swapped_artifact": _build_swapped_artifact,
     "unsigned_tamper": _build_unsigned_tamper,
     "dropped_gate": _build_dropped_gate,
+    "replay": _build_replay,
 }
 
-# 16 scenarios: 8 honest, 8 forged across 5 attack classes.
+# 17 scenarios: 8 honest, 9 forged across 6 attack classes.
 _PLAN: list[tuple[ScenarioKind, int]] = [
     ("honest", 1),
     ("tampered_artifact", 1),
@@ -427,6 +457,7 @@ _PLAN: list[tuple[ScenarioKind, int]] = [
     ("unsigned_tamper", 7),
     ("honest", 1),
     ("tampered_artifact", 1),
+    ("replay", 2),
 ]
 
 DEFAULT_SEED = 0xC0FFEE  # a fixed, named seed so the default run is reproducible
@@ -445,13 +476,16 @@ def build_scenarios(seed: int, base: Path) -> list[Scenario]:
 # ── The verify step (the thing under test) ──────────────────────────────────
 
 
-def _rigforge_verdict(packet: ProofPacket, signing_key: bytes | None) -> tuple[bool, bool | None, bool]:
+def _rigforge_verdict(
+    packet: ProofPacket, signing_key: bytes | None, claimed_phase: int | None = None
+) -> tuple[bool, bool | None, bool, bool]:
     """Run RIGForge's REAL verify over ``packet``.
 
-    Returns ``(integrity_ok, signature_ok, accepted)`` where ``accepted`` is the
-    platform's accept/reject decision under the strict ``--require-signature``
-    policy: a packet is accepted only if (a) its integrity hash is valid AND
-    (b) it carries a signature that verifies against the platform key.
+    Returns ``(integrity_ok, signature_ok, claim_ok, accepted)`` where
+    ``accepted`` is the platform's accept/reject decision under the strict
+    ``--require-signature`` policy: a packet is accepted only if (a) its
+    integrity hash is valid AND (b) it carries a signature that verifies against
+    the platform key AND (c) it was sealed for the phase being claimed.
 
     This is exactly the policy ``rigforge verify --strict --require-signature``
     enforces in :mod:`rigforge.cli`.
@@ -460,14 +494,18 @@ def _rigforge_verdict(packet: ProofPacket, signing_key: bytes | None) -> tuple[b
     signature_ok: bool | None = None
     if signing_key is not None and packet.signature:
         signature_ok = packet.verify_signature(signing_key)
-    # require-signature policy: must be signed AND the signature must verify.
-    accepted = bool(integrity_ok) and (signature_ok is True)
-    return integrity_ok, signature_ok, accepted
+    claim_ok = packet.matches_claim(claimed_phase if claimed_phase is not None else packet.phase)
+    # require-signature policy: must be signed, the signature must verify, and
+    # the packet must be bound to the claim it is offered for.
+    accepted = bool(integrity_ok) and (signature_ok is True) and claim_ok
+    return integrity_ok, signature_ok, claim_ok, accepted
 
 
 def _run_one(scenario: Scenario) -> ScenarioResult:
     t0 = time.perf_counter()
-    integrity_ok, signature_ok, accepted = _rigforge_verdict(scenario.packet, scenario.signing_key)
+    integrity_ok, signature_ok, claim_ok, accepted = _rigforge_verdict(
+        scenario.packet, scenario.signing_key, scenario.claimed_phase
+    )
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
     # Ground truth: honest claims must be ACCEPTED; forged claims must be REJECTED.
     correct = (accepted == scenario.is_honest)
@@ -481,6 +519,7 @@ def _run_one(scenario: Scenario) -> ScenarioResult:
         accepted=accepted,
         correct=correct,
         elapsed_ms=elapsed_ms,
+        claim_ok=claim_ok,
     )
 
 
@@ -580,6 +619,7 @@ def render_benchmark(result: BenchmarkResult) -> None:
     tbl.add_column("truth")
     tbl.add_column("integrity", justify="center")
     tbl.add_column("signature", justify="center")
+    tbl.add_column("claim", justify="center")
     tbl.add_column("accepted", justify="center")
     tbl.add_column("correct", justify="center")
     for r in result.scenarios:
@@ -589,9 +629,10 @@ def render_benchmark(result: BenchmarkResult) -> None:
             sig = Text("—", style="dim")
         else:
             sig = Text("pass", style="green") if r.signature_ok else Text("FAIL", style="red")
+        clm = Text("pass", style="green") if r.claim_ok else Text("FAIL", style="red")
         acc = Text("accept", style="green") if r.accepted else Text("REJECT", style="red")
         cor = Text("✔", style="green") if r.correct else Text("✘", style="red")
-        tbl.add_row(r.sid, r.kind, truth_txt, integ, sig, acc, cor)
+        tbl.add_row(r.sid, r.kind, truth_txt, integ, sig, clm, acc, cor)
     console.print(tbl)
     console.print()
 

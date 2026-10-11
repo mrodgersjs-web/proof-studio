@@ -80,10 +80,12 @@ def _accepts(scenario: Scenario, strategy: str) -> bool:
     if strategy == "naive integrity":
         return integrity
     signature = bool(key and p.signature and p.verify_signature(key))
+    claimed = scenario.claimed_phase if scenario.claimed_phase is not None else p.phase
+    claim = p.matches_claim(claimed)
     if strategy == "signed (RIGForge core)":
-        return integrity and signature
+        return integrity and signature and claim
     # spec-bound
-    return integrity and signature and verify_spec(p).ok
+    return integrity and signature and claim and verify_spec(p).ok
 
 
 def run_leaderboard(seed: int = DEFAULT_SEED) -> dict[str, Any]:

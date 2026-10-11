@@ -49,7 +49,7 @@ rigforge demo
 | Clean build | No | PASS | ✅ Sealed |
 | Tampered artifact hash | Yes | FAIL | ✅ Caught |
 | Forged signature (no key) | Yes | FAIL | ✅ Caught |
-| Replay attack | Yes | FAIL | ✅ Caught |
+| Replay attack (valid packet re-submitted for a newer phase) | Yes | PASS (claim binding FAIL) | ✅ Caught |
 
 <sup>Every planted failure must go red. If a gate cannot fail, it is theater.</sup>
 
