@@ -29,6 +29,14 @@ def _invoke(runner, project: Path, *args: str):
     return runner.invoke(main, ["--cwd", str(project), *args])
 
 
+def _bound_seal(runner, project: Path, phase: int, *extra: str) -> list[str]:
+    """Issue a challenge as the caller, seal with it, return strict expectations."""
+    nonce = _invoke(runner, project, "challenge", "issue", str(phase)).output.strip()
+    res = _invoke(runner, project, "seal", str(phase), *extra, "--challenge", nonce)
+    assert res.exit_code == 0, res.output
+    return ["--expect-project", project.name, "--expect-challenge", f"{phase}={nonce}"]
+
+
 # ── version + top-level ─────────────────────────────────────────────────
 
 
@@ -189,11 +197,10 @@ class TestRunSealVerify:
         artifact = project / "docs" / "evidence.txt"
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_text("hi")
-        seal_res = _invoke(runner, project, "seal", "1", "--artifact", str(artifact))
-        assert seal_res.exit_code == 0
-        result = _invoke(runner, project, "--json", "verify", "--strict")
+        expect = _bound_seal(runner, project, 1, "--artifact", str(artifact))
+        result = _invoke(runner, project, "--json", "verify", "--strict", *expect)
         payload = json.loads(result.output)
-        assert payload["ok"] is True
+        assert payload["ok"] is True, payload
         phase1 = next(p for p in payload["phases"] if p["phase"] == 1)
         assert phase1["integrity_ok"] is True
 
@@ -202,11 +209,11 @@ class TestRunSealVerify:
         artifact = project / "docs" / "evidence.txt"
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_text("hi")
-        assert _invoke(runner, project, "seal", "1", "--artifact", str(artifact)).exit_code == 0
+        expect = _bound_seal(runner, project, 1, "--artifact", str(artifact))
         # Replay: copy the valid phase-1 packet, unchanged, in as proof of phase 2.
         phase1_file = next(project.rglob("phase1_proof.json"))
         (phase1_file.parent / "phase2_proof.json").write_bytes(phase1_file.read_bytes())
-        result = _invoke(runner, project, "--json", "verify", "--strict")
+        result = _invoke(runner, project, "--json", "verify", "--strict", *expect)
         payload = json.loads(result.output)
         assert result.exit_code == 1
         assert payload["ok"] is False
@@ -222,13 +229,13 @@ class TestRunSealVerify:
         artifact = project / "docs" / "evidence.txt"
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_text("hi")
-        assert _invoke(runner, project, "seal", "2", "--artifact", str(artifact)).exit_code == 0
+        expect = _bound_seal(runner, project, 2, "--artifact", str(artifact))
         key = (project / DEFAULT_SIGNING_KEY_PATH).read_bytes().strip()
         phase2_file = next(project.rglob("phase2_proof.json"))
         # A genuinely signed phase-2 packet, but for a differently named claim.
         other = ProofPacket.load(phase2_file).model_copy(update={"name": "Some Other Claim"})
         other.write(phase2_file, signing_key=key)
-        result = _invoke(runner, project, "--json", "verify", "--strict", "--require-signature")
+        result = _invoke(runner, project, "--json", "verify", "--require-signature", *expect)
         payload = json.loads(result.output)
         assert result.exit_code == 1
         phase2 = next(p for p in payload["phases"] if p["phase"] == 2)

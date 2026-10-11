@@ -388,16 +388,21 @@ class TestVerifyRequireSignature:
         from rigforge.cli import main
 
         monkeypatch.setenv("RIGFORGE_SIGNING_KEY", "shh")
-        ctx.config_file.write_text("signing:\n  enabled: true\n")
+        ctx.config_file.write_text("project: fu-proj\nsigning:\n  enabled: true\n")
         runner = CliRunner()
 
         artifact = ctx.root / "a.txt"
         artifact.write_text("hi")
+        nonce = runner.invoke(main, ["--cwd", str(ctx.root), "challenge", "issue",
+                                     "1"]).output.strip()
         seal = runner.invoke(main, ["--cwd", str(ctx.root), "seal", "1",
-                                    "--artifact", str(artifact)])
+                                    "--artifact", str(artifact), "--challenge", nonce])
         assert seal.exit_code == 0, seal.output
+        # --require-signature is a strict flag: it needs caller expectations.
         result = runner.invoke(main, ["--cwd", str(ctx.root), "--json",
-                                      "verify", "--require-signature"])
+                                      "verify", "--require-signature",
+                                      "--expect-project", "fu-proj",
+                                      "--expect-challenge", f"1={nonce}"])
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
         assert payload["ok"] is True

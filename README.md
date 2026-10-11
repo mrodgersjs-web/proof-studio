@@ -53,7 +53,7 @@ rigforge demo
 
 <sup>Every planted failure must go red. If a gate cannot fail, it is theater.</sup>
 
-**Replay limits.** `verify` rejects a valid packet placed in a phase slot it was not sealed for (different phase number or different phase name). It does **not** yet catch two other replays, because the signed packet carries no project id and no nonce: (1) a packet copied from another project that uses the same signing key, and (2) an older valid packet from an earlier run of the same phase. Use a separate signing key per project, and keep proofs under version control so an older packet shows up in review.
+**Replay binding (schema 1.3.0).** Every `verify` rejects an invalid signature and a packet placed in a phase slot it was not sealed for. It also rejects the two replays a signature alone cannot see: (1) a valid packet copied from another project that uses the same signing key, and (2) an older valid packet from an earlier run of the same phase. The caller issues a challenge per run (`rigforge challenge issue N`), the seal signs the project id and that challenge into the packet (`rigforge seal N --challenge <nonce>`), and `rigforge verify --strict --expect-project <id> --expect-challenge N=<nonce>` compares them with the values the caller kept. Expected values come only from flags or an `--expectations` file outside the project directory; never from the packet, `.rigforge/challenges.json` or `rigforge.yaml`. Every strict flag (`--strict`, `--require-signature`, `--require-binding`, `--expect-*`) requires a valid signature, a trusted project id and at least one trusted challenge, and exits 2 without them. Plain `verify` with sealed packets and no expectations exits 1 (replay cannot be ruled out). Legacy packets (sealed before 1.3.0 or without `--challenge`) keep valid hashes and are accepted only by the explicit non-strict `verify --allow-unbound`, which still requires valid signatures, reports `trusted: false`, and is refused together with any strict flag. The cockpit (`rigforge serve --expect-project <id>`) binds every seal with a server-held challenge and verifies strictly by default; without `--expect-project` its verify fails closed. MCP `gev.seal_and_verify` binds only when the operator sets `RIGFORGE_PROJECT_ID`, and its verdict is a fresh seal check, not a replay check. Limits: anyone who holds the signing key can seal any project id and challenge (the binding stops replay of genuine packets, not forgery by a key holder); the challenge store is sealer bookkeeping that the agent can edit, so "reused challenge at seal" is not a verifier guarantee; rigforge older than 1.3.0 reports bound packets as an integrity mismatch. Runnable demo: `packages/rigforge/examples/replay_binding_demo.sh`.
 
 ## Why it exists
 
@@ -80,7 +80,7 @@ Production agent systems need a Definition of Done that is:
 rigforge demo                 # watch forged done get caught
 rigforge benchmark            # offline honesty scenarios
 rigforge init                 # scaffold proofs/ contracts/ ledger/
-rigforge verify --require-signature
+rigforge verify --strict --expect-project ID --expect-challenge N=NONCE
 ```
 
 **Evaluation gates:**

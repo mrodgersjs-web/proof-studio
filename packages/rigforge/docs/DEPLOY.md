@@ -75,9 +75,10 @@ rigforge seal 5 \
   --evidence "phase 5 gates green; tests pass"
 
 # 4. Verify every sealed phase
-rigforge verify                 # schema + integrity hash per packet
-rigforge verify --strict        # + phase-order continuity (no gaps)
-rigforge verify --require-signature   # + HMAC signature (needs a signing key)
+# Strict verify = integrity + signature + replay binding against values YOU hold:
+rigforge verify --strict --expect-project my-project --expect-challenge "5=$N"
+# ($N from `rigforge challenge issue 5`, passed to `rigforge seal 5 --challenge "$N"`)
+rigforge verify --allow-unbound # non-strict: accept legacy/unbound packets as UNTRUSTED
 
 # Status & audit
 rigforge status                 # per-phase sealed/integrity + blockers
@@ -112,8 +113,9 @@ signing:
 # Resolution order: RIGFORGE_SIGNING_KEY → RIGFORGE_SIGNING_KEY_FILE → signing.key_file
 export RIGFORGE_SIGNING_KEY="$(openssl rand -hex 32)"   # for a quick local run
 
-rigforge seal 5 --evidence "signed seal"
-rigforge verify --require-signature     # exits 2 if no key is configured
+N=$(rigforge challenge issue 5)
+rigforge seal 5 --evidence "signed seal" --challenge "$N"
+rigforge verify --strict --expect-project my-project --expect-challenge "5=$N"  # exits 2 without a key
 ```
 
 Keys are read as raw bytes (stripped) and never echoed. Keep `.secrets/` out of
@@ -329,7 +331,11 @@ jobs:
 
       - name: Verify all sealed phases (strict + signed)
         if: ${{ env.RIGFORGE_SIGNING_KEY != '' }}
-        run: rigforge verify --strict --require-signature
+        # PHASE5_CHALLENGE: issued by this job (rigforge challenge issue 5) before
+        # the agent ran, and kept by the job, never read back from the packet.
+        run: >-
+          rigforge verify --strict --expect-project my-project
+          --expect-challenge "5=${{ env.PHASE5_CHALLENGE }}"
         env:
           RIGFORGE_SIGNING_KEY: ${{ secrets.RIGFORGE_SIGNING_KEY }}
 ```

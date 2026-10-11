@@ -31,6 +31,18 @@ Each is a scenario in `rigforge benchmark`, scored on real `verify_*` verdicts:
 - **Phase-slot replay** — a valid signed packet re-submitted for a different phase → rejected by the claim check
   (`ProofPacket.matches_claim`, which compares the signed phase number and name to the slot being verified).
 
+Not benchmark scenarios, but covered by `rigforge/tests/test_replay_binding.py` and the
+runnable `examples/replay_binding_demo.sh` (schema 1.3.0 replay binding):
+
+- **Cross-project replay (shared key)** — a valid packet copied from another project → rejected by
+  `verify --strict --expect-project <id>`: the signed `binding.project_id` does not match
+- **Stale same-phase replay** — an older valid packet from an earlier run → rejected by
+  `verify --strict --expect-challenge N=<nonce>`: the signed `binding.challenge` is not the
+  challenge the caller issued for this run
+- **Reused or un-issued challenge** — `seal --challenge` refuses a challenge that was never issued, was
+  issued for another phase or project, or was already used; `verify` rejects two packets with the
+  same challenge
+
 The benchmark's **100%** catch rate is a *correctness* result, not a probabilistic
 score: an HMAC bound to the original hashes is cryptographically unforgeable without
 the key, so these forgeries **must** fail. That's the point — and you can re-run it.
@@ -48,10 +60,18 @@ the key, so these forgeries **must** fail. That's the point — and you can re-r
   *integrity and provenance*, not *correctness or safety* of the code itself.
 - **Weak gates.** A proof is only as meaningful as the gates it seals. Sealing a phase
   whose only gate is `echo ok` proves very little. Garbage gates in, garbage proof out.
-- **Cross-project replay with a shared key.** The signed payload has no project id, so a valid
-  packet copied from another project that uses the same signing key verifies. Use one key per project.
-- **Stale same-phase replay.** There is no nonce or freshness check, so an older valid packet from an
-  earlier run of the same phase and name still verifies. Keep proofs in version control and review changes.
+- **Untrusted legacy acceptance.** `verify --allow-unbound` (non-strict, refused with every strict
+  flag) accepts packets without a binding, and bound packets without caller expectations, as long as
+  their signatures verify. It reports `trusted: false`: replay is not ruled out.
+- **The challenge store is not a verifier guarantee.** `.rigforge/challenges.json` stops accidental
+  challenge reuse at seal time, but the agent can edit it. Only caller-held expectations count.
+- **Forgery by a key holder.** The binding is signed with the same project HMAC key. Anyone who holds
+  that key can seal any project id and challenge. The binding stops replay of genuine packets; it does
+  not identify who sealed them.
+- **Expectations taken from agent-writable places.** If the caller copies the expected project id or
+  challenge out of the packet, or out of files the agent can edit (including `.rigforge/challenges.json`
+  and `rigforge.yaml`), the check proves nothing. The CLI only takes them from flags or an
+  `--expectations` file; keep that file outside the project.
 - **Supply-chain / dependency compromise**, host compromise, or side channels. Same as
   any signing scheme — the root of trust is the key and the machine that holds it.
 
