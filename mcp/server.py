@@ -8,6 +8,8 @@ behind typed human approval (org execution-owner standard, row 8).
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -18,7 +20,9 @@ except ImportError:  # pragma: no cover
     sys.exit("pip install 'mcp[cli]' to run this results MCP server")
 
 ROOT = Path(__file__).resolve().parents[1]
-RIG_LOOP = Path.home() / "Developer/rig-capabilities/bin/rig-loop"
+# The platform helper is resolved from $RIG_LOOP or PATH; never a hardcoded
+# home-directory path.
+RIG_LOOP = Path(os.environ.get("RIG_LOOP") or shutil.which("rig-loop") or "rig-loop")
 mcp = FastMCP("rig-results")
 
 
