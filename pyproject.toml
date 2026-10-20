@@ -33,7 +33,7 @@ dev = [
 ]
 # Only for mcp/server.py (the results MCP surface); the studio itself needs none.
 mcp = [
-    "mcp>=1.0,<2.0",
+    "mcp>=1.0,<3.0",
 ]
 
 [project.scripts]
