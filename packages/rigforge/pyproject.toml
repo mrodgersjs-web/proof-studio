@@ -31,7 +31,7 @@ CI = "https://github.com/mrodgersjs-web/rigforge/actions"
 
 [project.optional-dependencies]
 mcp = [
-    "mcp>=1.0,<2.0",
+    "mcp>=1.0,<3.0",
     "fastapi>=0.110,<1.0",
     "uvicorn>=0.29,<1.0",
 ]
