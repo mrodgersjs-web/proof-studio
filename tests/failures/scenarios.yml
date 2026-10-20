@@ -1,0 +1,50 @@
+# Planted-failure scenario manifest.
+#
+# Each row names one ProofPacket vector file in this directory, the claim it is
+# submitted against, and the verdict the verifier must reach. `proof-studio run`
+# fails if any expectation is not met, so a planted failure that stops going red
+# fails CI. Regenerate the vector files with `proof-studio build-vectors`; the
+# builders are deterministic, so the bytes are reproducible.
+#
+# The demo signing key is derived from a literal string and is not a secret.
+# Real deployments keep their key out of the repo (docs/public-boundary.md).
+scenarios:
+  - file: clean_build.json
+    kind: control
+    expect: accept
+    claim:
+      phase: 1
+      name: demo build
+    description: >-
+      Honest packet: one artifact, one passing gate, sealed with the demo key.
+      The control case; the verifier must accept it.
+
+  - file: tampered_artifact_hash.json
+    kind: tampered_artifact_hash
+    expect: reject
+    claim:
+      phase: 1
+      name: demo build
+    description: >-
+      Artifact hash swapped after sealing and the packet hash re-forged to hide
+      it. Naive integrity passes; the HMAC signature does not.
+
+  - file: forged_signature_no_key.json
+    kind: forged_signature
+    expect: reject
+    claim:
+      phase: 1
+      name: demo build
+    description: >-
+      Signature produced without the real signing key. Integrity passes; the
+      signature check fails.
+
+  - file: replay_attack.json
+    kind: replay
+    expect: reject
+    claim:
+      phase: 2
+      name: later build
+    description: >-
+      A genuine packet sealed for phase 1 "demo build", re-submitted as proof of
+      a newer claim. Integrity and signature pass; claim binding fails.
