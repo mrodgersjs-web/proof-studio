@@ -3,6 +3,19 @@
 All notable changes to this project are documented in this file. The format is
 based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+Polish wave (2026-10-19, same day, this commit): the README CI badge moved to the shields
+`github/actions/workflow/status` form for `ci.yml` on `main`, and every job in
+`.github/workflows/ci.yml`, `.github/workflows/rig-lattice.yml` and
+`.github/workflows/smoke.yml` gained `timeout-minutes: 15`.
+
+- Added `tests/test_repo_hygiene.py`, which asserts: asserts from the files on disk that
+  `.github/CODEOWNERS` contains `* @mrodgersjs-web`, that
+  `.github/copilot-instructions.md` exists within 8000 bytes and names a test
+  command, that the README carries a `github/actions/workflow/status` badge, the
+  `rodgersintelligence.com` footer, a test command word and clone examples
+  targeting `mrodgersjs-web/proof-studio`, and that every workflow job has
+  `timeout-minutes` and no `continue-on-error`.
+
 ## [1.0.0] - 2026-10-19
 
 First packaged release: proof-studio becomes the tamper-scenario and benchmark

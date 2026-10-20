@@ -4,7 +4,7 @@
 
 ![proof-studio demo: planted forgeries run against the real verifier](docs/proof-studio-demo.gif)
 
-[![CI](https://github.com/mrodgersjs-web/proof-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/mrodgersjs-web/proof-studio/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/mrodgersjs-web/proof-studio/ci.yml?branch=main&label=CI)](https://github.com/mrodgersjs-web/proof-studio/actions/workflows/ci.yml)
 ![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 

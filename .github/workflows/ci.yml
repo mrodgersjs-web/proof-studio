@@ -12,6 +12,7 @@ jobs:
   studio:
     name: studio tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -38,6 +39,7 @@ jobs:
   core:
     name: vendored rigforge tests (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
