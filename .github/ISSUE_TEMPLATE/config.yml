@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security report
+    url: https://github.com/mrodgersjs-web/proof-studio/blob/main/SECURITY.md
+    about: Report security issues privately to security@rodgersintelligence.com
+  - name: The core library
+    url: https://github.com/mrodgersjs-web/rigforge
+    about: Sealing and verification bugs belong in the rigforge repo

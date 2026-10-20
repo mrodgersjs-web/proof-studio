@@ -1,0 +1,29 @@
+name: Feature request
+description: Suggest a scenario class, report field, or improvement
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The most useful request names an attack the verifier should defeat and
+        the check that should catch it.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What the studio cannot show today, and who it affects.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you want
+      description: The scenario class, vector, or report behavior you would like.
+    validations:
+      required: true
+  - type: textarea
+    id: proof
+    attributes:
+      label: How it would prove itself
+      description: The check a reviewer could run to see it works.

@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "proof-studio: tamper-scenario and benchmark studio around rigforge"
+type: software
+authors:
+  - family-names: "Rodgers"
+    given-names: "Mike"
+repository-code: "https://github.com/mrodgersjs-web/proof-studio"
+url: "https://rodgersintelligence.com"
+license: MIT
+version: "1.0.0"
+date-released: "2026-10-19"
+abstract: >-
+  proof-studio authors forged-proof attack scenarios (tampered artifact hash,
+  forged signature, replayed packet), runs them against the real rigforge
+  verifier, and reports per attack class what gets caught. Planted-failure
+  vectors are committed and CI fails when a forgery stops going red.
+keywords:
+  - tamper-evidence
+  - proof-packets
+  - benchmark
+  - verification
+  - ai-agents
